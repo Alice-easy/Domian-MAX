@@ -1,0 +1,505 @@
+# 性能测试工作流（默认禁用）
+name: Performance Test
+
+on:
+  # 默认禁用自动触发，需要手动启用
+  # schedule:
+  #   # 每周日凌晨 3:00 UTC 运行性能测试
+  #   - cron: "0 3 * * 0"
+  # push:
+  #   branches: [main]
+  #   paths-ignore:
+  #     - "docs/**"
+  #     - "*.md"
+  workflow_dispatch:
+    inputs:
+      enable_workflow:
+        description: "启用工作流（默认禁用）"
+        required: true
+        default: false
+        type: boolean
+      test_duration:
+        description: "测试持续时间"
+        required: false
+        default: "5m"
+        type: string
+      virtual_users:
+        description: "虚拟用户数"
+        required: false
+        default: "50"
+        type: string
+      test_scenarios:
+        description: "测试场景"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - auth
+          - dns
+          - admin
+
+env:
+  TEST_DURATION: ${{ inputs.test_duration || '5m' }}
+  VIRTUAL_USERS: ${{ inputs.virtual_users || '50' }}
+  TEST_SCENARIOS: ${{ inputs.test_scenarios || 'all' }}
+
+jobs:
+  # ===== 性能测试环境准备 =====
+  setup-test-environment:
+    name: 准备性能测试环境
+    runs-on: ubuntu-latest
+    outputs:
+      test-url: ${{ steps.setup.outputs.test-url }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置测试环境
+        id: setup
+        run: |
+          # 创建性能测试配置
+          cp deployments/.env.example deployments/.env
+          cat >> deployments/.env << EOF
+          DB_PASSWORD=perftest123
+          JWT_SECRET=performance-test-jwt-secret-key-for-testing
+          ENCRYPTION_KEY=12345678901234567890123456789012
+          LOG_LEVEL=error
+          ENVIRONMENT=performance-test
+          EOF
+
+      - name: 启动测试环境
+        run: |
+          cd deployments
+          docker-compose up -d --build
+
+          # 等待服务启动
+          timeout 300 bash -c 'until curl -f http://localhost:8080/api/health; do sleep 5; done'
+
+          echo "test-url=http://localhost:8080" >> $GITHUB_OUTPUT
+
+      - name: 验证测试环境
+        run: |
+          # 验证所有服务都正常运行
+          curl -f http://localhost:8080/api/health
+          docker-compose ps
+
+  # ===== 负载测试 =====
+  load-test:
+    name: 负载测试
+    runs-on: ubuntu-latest
+    needs: setup-test-environment
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 K6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: 创建性能测试脚本
+        run: |
+          mkdir -p performance-tests
+
+          # 创建主测试脚本
+          cat > performance-tests/load-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+          import { Rate } from 'k6/metrics';
+
+          // 自定义指标
+          export let errorRate = new Rate('errors');
+
+          // 测试配置
+          export let options = {
+            stages: [
+              { duration: '2m', target: parseInt(__ENV.VIRTUAL_USERS) / 2 }, // 预热
+              { duration: __ENV.TEST_DURATION || '5m', target: parseInt(__ENV.VIRTUAL_USERS) }, // 负载测试
+              { duration: '2m', target: 0 }, // 冷却
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<2000'], // 95% 的请求在 2 秒内完成
+              http_req_failed: ['rate<0.1'], // 错误率小于 10%
+              errors: ['rate<0.1'],
+            },
+          };
+
+          const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+
+          // 测试用户认证
+          export function setup() {
+            // 注册测试用户
+            const registerPayload = JSON.stringify({
+              email: `perftest${Date.now()}@example.com`,
+              password: 'PerfTest123!',
+              name: 'Performance Test User'
+            });
+
+            const registerRes = http.post(`${BASE_URL}/api/auth/register`, registerPayload, {
+              headers: { 'Content-Type': 'application/json' },
+            });
+
+            if (registerRes.status === 201) {
+              // 登录获取 token
+              const loginPayload = JSON.stringify({
+                email: `perftest${Date.now()}@example.com`,
+                password: 'PerfTest123!'
+              });
+
+              const loginRes = http.post(`${BASE_URL}/api/auth/login`, loginPayload, {
+                headers: { 'Content-Type': 'application/json' },
+              });
+
+              if (loginRes.status === 200) {
+                const token = JSON.parse(loginRes.body).token;
+                return { token: token };
+              }
+            }
+
+            return { token: null };
+          }
+
+          export default function(data) {
+            const scenarios = __ENV.TEST_SCENARIOS || 'all';
+            
+            // 健康检查测试
+            if (scenarios === 'all' || scenarios === 'health') {
+              let res = http.get(`${BASE_URL}/api/health`);
+              check(res, {
+                'health check status is 200': (r) => r.status === 200,
+                'health check response time < 500ms': (r) => r.timings.duration < 500,
+              }) || errorRate.add(1);
+            }
+
+            // 认证相关测试
+            if (scenarios === 'all' || scenarios === 'auth') {
+              const headers = data.token ? {
+                'Authorization': `Bearer ${data.token}`,
+                'Content-Type': 'application/json'
+              } : { 'Content-Type': 'application/json' };
+
+              // 获取用户信息
+              if (data.token) {
+                let profileRes = http.get(`${BASE_URL}/api/auth/profile`, { headers });
+                check(profileRes, {
+                  'profile status is 200': (r) => r.status === 200,
+                  'profile response time < 1000ms': (r) => r.timings.duration < 1000,
+                }) || errorRate.add(1);
+              }
+            }
+
+            // DNS 相关测试
+            if (scenarios === 'all' || scenarios === 'dns') {
+              const headers = data.token ? {
+                'Authorization': `Bearer ${data.token}`,
+                'Content-Type': 'application/json'
+              } : {};
+
+              // 获取 DNS 记录
+              let dnsRes = http.get(`${BASE_URL}/api/dns/records`, { headers });
+              check(dnsRes, {
+                'dns records response time < 1500ms': (r) => r.timings.duration < 1500,
+              }) || errorRate.add(1);
+
+              // 获取域名列表
+              let domainsRes = http.get(`${BASE_URL}/api/domains`, { headers });
+              check(domainsRes, {
+                'domains response time < 1000ms': (r) => r.timings.duration < 1000,
+              }) || errorRate.add(1);
+            }
+
+            // 管理功能测试
+            if (scenarios === 'all' || scenarios === 'admin') {
+              const headers = data.token ? {
+                'Authorization': `Bearer ${data.token}`,
+                'Content-Type': 'application/json'
+              } : {};
+
+              // 获取用户列表（管理功能）
+              let adminRes = http.get(`${BASE_URL}/api/admin/users`, { headers });
+              check(adminRes, {
+                'admin response time < 2000ms': (r) => r.timings.duration < 2000,
+              }) || errorRate.add(1);
+            }
+
+            sleep(1); // 用户思考时间
+          }
+
+          export function teardown(data) {
+            // 清理测试数据
+            console.log('性能测试完成');
+          }
+          EOF
+
+      - name: 运行负载测试
+        env:
+          BASE_URL: ${{ needs.setup-test-environment.outputs.test-url }}
+        run: |
+          k6 run \
+            --out json=load-test-results.json \
+            --env BASE_URL=$BASE_URL \
+            --env TEST_DURATION=$TEST_DURATION \
+            --env VIRTUAL_USERS=$VIRTUAL_USERS \
+            --env TEST_SCENARIOS=$TEST_SCENARIOS \
+            performance-tests/load-test.js
+
+      - name: 上传负载测试结果
+        uses: actions/upload-artifact@v3
+        with:
+          name: load-test-results
+          path: load-test-results.json
+
+  # ===== 压力测试 =====
+  stress-test:
+    name: 压力测试
+    runs-on: ubuntu-latest
+    needs: setup-test-environment
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 K6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: 创建压力测试脚本
+        run: |
+          mkdir -p performance-tests
+
+          cat > performance-tests/stress-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+
+          export let options = {
+            stages: [
+              { duration: '1m', target: 50 },   // 预热到 50 用户
+              { duration: '2m', target: 100 },  // 增加到 100 用户
+              { duration: '3m', target: 200 },  // 压力测试 200 用户
+              { duration: '2m', target: 400 },  // 极限压力 400 用户
+              { duration: '1m', target: 0 },    // 冷却
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<5000'], // 95% 的请求在 5 秒内完成
+              http_req_failed: ['rate<0.3'], // 错误率小于 30%
+            },
+          };
+
+          const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+
+          export default function() {
+            let res = http.get(`${BASE_URL}/api/health`);
+            check(res, {
+              'status is 200': (r) => r.status === 200,
+            });
+            sleep(0.5);
+          }
+          EOF
+
+      - name: 运行压力测试
+        env:
+          BASE_URL: ${{ needs.setup-test-environment.outputs.test-url }}
+        run: |
+          k6 run \
+            --out json=stress-test-results.json \
+            --env BASE_URL=$BASE_URL \
+            performance-tests/stress-test.js
+
+      - name: 上传压力测试结果
+        uses: actions/upload-artifact@v3
+        with:
+          name: stress-test-results
+          path: stress-test-results.json
+
+  # ===== 峰值测试 =====
+  spike-test:
+    name: 峰值测试
+    runs-on: ubuntu-latest
+    needs: setup-test-environment
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 K6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: 创建峰值测试脚本
+        run: |
+          mkdir -p performance-tests
+
+          cat > performance-tests/spike-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+
+          export let options = {
+            stages: [
+              { duration: '30s', target: 10 },   // 正常负载
+              { duration: '10s', target: 500 },  // 突然峰值
+              { duration: '30s', target: 500 },  // 维持峰值
+              { duration: '10s', target: 10 },   // 快速下降
+              { duration: '30s', target: 10 },   // 恢复正常
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<10000'], // 95% 的请求在 10 秒内完成
+              http_req_failed: ['rate<0.5'], // 错误率小于 50%
+            },
+          };
+
+          const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+
+          export default function() {
+            let res = http.get(`${BASE_URL}/api/health`);
+            check(res, {
+              'status is 200': (r) => r.status === 200,
+            });
+            sleep(0.1);
+          }
+          EOF
+
+      - name: 运行峰值测试
+        env:
+          BASE_URL: ${{ needs.setup-test-environment.outputs.test-url }}
+        run: |
+          k6 run \
+            --out json=spike-test-results.json \
+            --env BASE_URL=$BASE_URL \
+            performance-tests/spike-test.js
+
+      - name: 上传峰值测试结果
+        uses: actions/upload-artifact@v3
+        with:
+          name: spike-test-results
+          path: spike-test-results.json
+
+  # ===== 生成性能报告 =====
+  generate-performance-report:
+    name: 生成性能报告
+    runs-on: ubuntu-latest
+    needs: [load-test, stress-test, spike-test]
+    if: always()
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载测试结果
+        uses: actions/download-artifact@v3
+
+      - name: 安装分析工具
+        run: |
+          npm install -g json2csv
+
+      - name: 分析性能测试结果
+        run: |
+          echo "# 🚀 Domain MAX 性能测试报告" > performance-report.md
+          echo "" >> performance-report.md
+          echo "**测试时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> performance-report.md
+          echo "**测试配置**: $VIRTUAL_USERS 虚拟用户，持续 $TEST_DURATION" >> performance-report.md
+          echo "**测试场景**: $TEST_SCENARIOS" >> performance-report.md
+          echo "" >> performance-report.md
+
+          echo "## 📊 测试结果总览" >> performance-report.md
+          echo "" >> performance-report.md
+          echo "| 测试类型 | 状态 | 说明 |" >> performance-report.md
+          echo "|---------|------|------|" >> performance-report.md
+          echo "| 负载测试 | ${{ needs.load-test.result == 'success' && '✅ 通过' || '❌ 失败' }} | 正常负载下的性能表现 |" >> performance-report.md
+          echo "| 压力测试 | ${{ needs.stress-test.result == 'success' && '✅ 通过' || '❌ 失败' }} | 高负载下的系统稳定性 |" >> performance-report.md
+          echo "| 峰值测试 | ${{ needs.spike-test.result == 'success' && '✅ 通过' || '❌ 失败' }} | 突发流量的处理能力 |" >> performance-report.md
+          echo "" >> performance-report.md
+
+          # 分析负载测试结果
+          if [ -f load-test-results/load-test-results.json ]; then
+            echo "## 📈 负载测试详细结果" >> performance-report.md
+            echo "" >> performance-report.md
+            
+            # 提取关键指标
+            cat load-test-results/load-test-results.json | jq -r '
+              select(.type == "Point" and .metric == "http_req_duration") |
+              .data.value
+            ' | awk '{sum+=$1; count++} END {print "平均响应时间: " sum/count " ms"}' >> performance-report.md
+            
+            cat load-test-results/load-test-results.json | jq -r '
+              select(.type == "Point" and .metric == "http_reqs") |
+              .data.value
+            ' | awk '{sum+=$1} END {print "总请求数: " sum}' >> performance-report.md
+            
+            echo "" >> performance-report.md
+          fi
+
+          echo "## 🎯 性能优化建议" >> performance-report.md
+          echo "" >> performance-report.md
+          echo "基于测试结果，建议关注以下优化点：" >> performance-report.md
+          echo "" >> performance-report.md
+          echo "1. **数据库优化**: 检查慢查询，优化索引" >> performance-report.md
+          echo "2. **缓存策略**: 增加 Redis 缓存使用" >> performance-report.md
+          echo "3. **连接池**: 调优数据库连接池配置" >> performance-report.md
+          echo "4. **负载均衡**: 考虑横向扩展" >> performance-report.md
+          echo "5. **资源监控**: 加强 CPU 和内存监控" >> performance-report.md
+
+      - name: 上传性能报告
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-report
+          path: performance-report.md
+
+      - name: 发送性能报告通知
+        if: github.event_name == 'schedule' && secrets.SLACK_WEBHOOK_URL
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "text": "🚀 Domain MAX 性能测试完成",
+              "attachments": [
+                {
+                  "color": "${{ contains(needs.*.result, 'failure') && 'warning' || 'good' }}",
+                  "fields": [
+                    {
+                      "title": "测试结果",
+                      "value": "负载测试: ${{ needs.load-test.result }}\n压力测试: ${{ needs.stress-test.result }}\n峰值测试: ${{ needs.spike-test.result }}",
+                      "short": true
+                    },
+                    {
+                      "title": "测试配置",
+                      "value": "用户数: ${{ env.VIRTUAL_USERS }}\n持续时间: ${{ env.TEST_DURATION }}",
+                      "short": true
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ===== 清理测试环境 =====
+  cleanup:
+    name: 清理测试环境
+    runs-on: ubuntu-latest
+    needs: [load-test, stress-test, spike-test]
+    if: always()
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 清理测试环境
+        run: |
+          cd deployments
+          docker-compose down -v
+          docker system prune -f

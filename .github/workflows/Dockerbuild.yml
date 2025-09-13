@@ -1,11 +1,23 @@
-name: Docker Build & Push with Cache
+name: Docker Build & Push with Cache（默认禁用）
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch: # 支持手动触发
+  # 默认禁用自动触发，需要手动启用
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+  workflow_dispatch:
+    inputs:
+      enable_workflow:
+        description: "启用工作流（默认禁用）"
+        required: true
+        default: false
+        type: boolean
+      push_to_registry:
+        description: "推送到注册表"
+        required: false
+        default: true
+        type: boolean
 
 env:
   REGISTRY: ghcr.io
@@ -14,6 +26,7 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    if: ${{ inputs.enable_workflow == true }}
     permissions:
       contents: read
       packages: write

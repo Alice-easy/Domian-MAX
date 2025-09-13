@@ -1,10 +1,14 @@
 package main
 
 import (
+	"domain-max/pkg/api"
 	"domain-max/pkg/config"
 	"domain-max/pkg/database"
+	"domain-max/pkg/dns/providers"
 	"domain-max/pkg/middleware"
+	"domain-max/pkg/utils"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -21,19 +25,34 @@ func main() {
 	var err error
 	
 	if cfg.Environment == "development" {
-		log.Println("开发环境：跳过数据库连接")
-		db = nil
-	} else {
-		db, err = database.Connect(cfg)
-		if err != nil {
-			log.Fatal("数据库连接失败:", err)
-		}
-
-		// 自动迁移数据库表
-		if err := database.Migrate(db); err != nil {
-			log.Fatal("数据库迁移失败:", err)
-		}
+		log.Println("开发环境：连接数据库")
 	}
+	
+	db, err = database.Connect(cfg)
+	if err != nil {
+		log.Fatal("数据库连接失败:", err)
+	}
+
+	// 运行数据库迁移
+	if err := database.Migrate(db); err != nil {
+		log.Fatalf("数据库迁移失败: %v", err)
+	}
+
+	// 初始化安全服务
+	jwtService := utils.NewJWTService(cfg.JWTSecret, 24) // 24小时过期
+	passwordService := utils.NewPasswordService()
+	encryptionService, err := utils.NewEncryptionService(cfg.EncryptionKey)
+	if err != nil {
+		log.Fatalf("加密服务初始化失败: %v", err)
+	}
+	validationService := utils.NewValidationService()
+
+	// 初始化DNS提供商工厂
+	providerFactory := providers.NewProviderFactory()
+
+	// 初始化API控制器
+	authAPI := api.NewAuthAPI(db, jwtService, passwordService, validationService)
+	dnsAPI := api.NewSimpleDNSAPI(db, providerFactory, encryptionService, validationService)
 
 	// 设置Gin模式
 	if cfg.Environment == "production" {
@@ -42,20 +61,12 @@ func main() {
 
 	router := gin.Default()
 
-	// 添加环境感知的CORS中间件
-	corsConfig := middleware.CORSConfig{
-		AllowedOrigins: []string{
-			"http://localhost:3000",   // React开发服务器
-			"http://localhost:5173",   // Vite开发服务器
-			"http://localhost:8080",   // 本地生产环境
-			"https://your-domain.com", // 生产域名，需要替换为实际域名
-		},
-		IsDevelopment: cfg.Environment == "development",
-	}
-	router.Use(middleware.CORSWithConfig(corsConfig))
+	// 添加中间件
+	router.Use(middleware.CORSMiddleware())
+	router.Use(middleware.RateLimitMiddleware())
 
 	// API路由
-	setupAPIRoutes(router, db, cfg)
+	setupAPIRoutes(router, authAPI, dnsAPI, jwtService)
 
 	// 前端静态文件服务
 	setupWebRoutes(router)
@@ -95,12 +106,84 @@ func setupWebRoutes(router *gin.Engine) {
 	})
 }
 
-func setupAPIRoutes(router *gin.Engine, db interface{}, cfg interface{}) {
-	// TODO: 实现API路由设置
-	apiGroup := router.Group("/api")
-	
+func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, dnsAPI *api.SimpleDNSAPI, jwtService *utils.JWTService) {
 	// 健康检查
-	apiGroup.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"message": "服务运行正常",
+			"version": "1.0.0",
+		})
 	})
+
+	// API版本1
+	v1 := router.Group("/api/v1")
+
+	// 认证路由（无需认证）
+	auth := v1.Group("/auth")
+	{
+		auth.POST("/login", authAPI.Login)
+		auth.POST("/register", authAPI.Register)
+		auth.POST("/logout", authAPI.Logout)
+	}
+
+	// 需要认证的路由
+	protected := v1.Group("")
+	protected.Use(middleware.AuthMiddleware(jwtService))
+	{
+		// 用户相关
+		user := protected.Group("/user")
+		{
+			user.GET("/profile", authAPI.GetProfile)
+			user.POST("/change-password", authAPI.ChangePassword)
+			user.POST("/refresh-token", authAPI.RefreshToken)
+		}
+
+		// DNS提供商管理
+		providers := protected.Group("/dns-providers")
+		{
+			providers.GET("", dnsAPI.GetDNSProviders)
+			providers.POST("", dnsAPI.CreateDNSProvider)
+			providers.POST("/:id/test", dnsAPI.TestDNSProvider)
+			providers.GET("/supported", dnsAPI.ListSupportedProviders)
+		}
+
+		// 域名管理
+		domains := protected.Group("/domains")
+		{
+			domains.GET("", func(c *gin.Context) {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "域名管理功能待实现",
+					"todo":    "实现域名列表、添加域名、域名配置等功能",
+				})
+			})
+		}
+
+		// 管理员路由
+		admin := protected.Group("/admin")
+		admin.Use(middleware.AdminRequiredMiddleware())
+		{
+			// 用户管理
+			adminUsers := admin.Group("/users")
+			{
+				adminUsers.GET("", func(c *gin.Context) {
+					c.JSON(http.StatusOK, gin.H{
+						"message": "用户管理功能待实现",
+						"todo":    "实现用户列表、用户详情、用户禁用等功能",
+					})
+				})
+			}
+
+			// 系统管理
+			system := admin.Group("/system")
+			{
+				system.GET("/stats", func(c *gin.Context) {
+					c.JSON(http.StatusOK, gin.H{
+						"message": "系统统计功能待实现",
+						"todo":    "实现用户统计、域名统计、DNS记录统计等",
+					})
+				})
+			}
+		}
+	}
 }

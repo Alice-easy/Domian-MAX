@@ -16,13 +16,31 @@ import AdminDomains from '@/pages/admin/domains'
 import AdminProviders from '@/pages/admin/providers'
 import AdminSMTPConfigs from '@/pages/admin/smtp-configs'
 import { useEffect } from 'react'
+import { Spin } from 'antd'
 
 function App() {
-  const { user, initAuth } = useAuthStore()
+  const { user, isInitialized, initAuth } = useAuthStore()
 
   useEffect(() => {
-    initAuth()
-  }, [initAuth])
+    if (!isInitialized) {
+      initAuth()
+    }
+  }, [initAuth, isInitialized])
+
+  // 显示加载状态直到认证初始化完成
+  if (!isInitialized) {
+    return (
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        height: '100vh',
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+      }}>
+        <Spin size="large" />
+      </div>
+    )
+  }
 
   return (
     <Routes>

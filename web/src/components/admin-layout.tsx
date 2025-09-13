@@ -112,7 +112,7 @@ export default function AdminLayout() {
           <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
             <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Avatar icon={<UserOutlined />} />
-              <span>{user?.name} (管理员)</span>
+              <span>{user?.username} (管理员)</span>
             </Button>
           </Dropdown>
         </Header>

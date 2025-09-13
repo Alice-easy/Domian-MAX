@@ -1,0 +1,438 @@
+# CI/CD 工作流配置
+name: CI/CD Pipeline
+
+on:
+  # 默认禁用自动触发，需要手动启用
+  # push:
+  #   branches: [main, develop]
+  #   tags: ["v*"]
+  # pull_request:
+  #   branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      enable_workflow:
+        description: "启用工作流（默认禁用）"
+        required: true
+        default: false
+        type: boolean
+      environment:
+        description: "部署环境"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+      skip_tests:
+        description: "跳过测试"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  GO_VERSION: "1.23"
+  NODE_VERSION: "18"
+
+jobs:
+  # ===== 代码质量检查 =====
+  code-quality:
+    name: 代码质量检查
+    runs-on: ubuntu-latest
+    if: ${{ inputs.enable_workflow == true }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      # Go 代码检查
+      - name: Go 代码格式检查
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "代码格式不符合规范："
+            gofmt -s -l .
+            exit 1
+          fi
+
+      - name: Go 静态分析
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Go 安全扫描
+        uses: securecodewarrior/github-action-gosec@master
+        with:
+          args: "./..."
+
+      # 前端代码检查
+      - name: 安装前端依赖
+        working-directory: ./web
+        run: npm ci
+
+      - name: 前端代码检查
+        working-directory: ./web
+        run: |
+          npm run lint
+          npm run type-check
+
+      - name: 前端安全扫描
+        working-directory: ./web
+        run: npm audit --audit-level=high
+
+  # ===== 单元测试 =====
+  unit-tests:
+    name: 单元测试
+    runs-on: ubuntu-latest
+    if: ${{ inputs.enable_workflow == true && !inputs.skip_tests }}
+    needs: code-quality
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_USER: testuser
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      # Go 测试
+      - name: Go 单元测试
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: testuser
+          DB_PASSWORD: testpass
+          DB_NAME: testdb
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          JWT_SECRET: test-secret-key-for-testing-purposes-only
+          ENCRYPTION_KEY: 12345678901234567890123456789012
+        run: |
+          go mod download
+          go test -v -race -coverprofile=coverage.out ./...
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: 上传 Go 测试覆盖率
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.out
+          flags: backend
+
+      # 前端测试
+      - name: 安装前端依赖
+        working-directory: ./web
+        run: npm ci
+
+      - name: 前端单元测试
+        working-directory: ./web
+        run: npm run test:coverage
+
+      - name: 上传前端测试覆盖率
+        uses: codecov/codecov-action@v3
+        with:
+          directory: ./web/coverage
+          flags: frontend
+
+  # ===== 集成测试 =====
+  integration-tests:
+    name: 集成测试
+    runs-on: ubuntu-latest
+    if: ${{ inputs.enable_workflow == true && !inputs.skip_tests }}
+    needs: unit-tests
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置测试环境
+        run: |
+          cp deployments/.env.example deployments/.env
+          echo "DB_PASSWORD=testpass123" >> deployments/.env
+          echo "JWT_SECRET=test-jwt-secret-key-for-integration-testing" >> deployments/.env
+          echo "ENCRYPTION_KEY=12345678901234567890123456789012" >> deployments/.env
+
+      - name: 启动测试环境
+        run: |
+          cd deployments
+          docker-compose up -d --build
+
+          # 等待服务启动
+          timeout 300 bash -c 'until curl -f http://localhost:8080/api/health; do sleep 5; done'
+
+      - name: 运行集成测试
+        run: |
+          chmod +x scripts/system-test.sh
+          ./scripts/system-test.sh
+
+      - name: 收集日志
+        if: failure()
+        run: |
+          cd deployments
+          docker-compose logs > ../integration-test-logs.txt
+
+      - name: 上传测试日志
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: integration-test-logs
+          path: integration-test-logs.txt
+
+      - name: 清理测试环境
+        if: always()
+        run: |
+          cd deployments
+          docker-compose down -v
+
+  # ===== 构建镜像 =====
+  build-image:
+    name: 构建 Docker 镜像
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests]
+    if: ${{ inputs.enable_workflow == true && always() && (needs.code-quality.result == 'success' && (needs.unit-tests.result == 'success' || inputs.skip_tests)) }}
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录到容器注册表
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix={{branch}}-
+
+      - name: 构建并推送镜像
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./deployments/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            BUILDTIME=${{ github.event.head_commit.timestamp }}
+
+  # ===== 安全扫描 =====
+  security-scan:
+    name: 安全扫描
+    runs-on: ubuntu-latest
+    needs: build-image
+    if: ${{ inputs.enable_workflow == true && always() && needs.build-image.result == 'success' }}
+
+    steps:
+      - name: 运行 Trivy 漏洞扫描
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ fromJSON(needs.build-image.outputs.image-tags)[0] }}
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: 上传 Trivy 扫描结果
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"
+
+      - name: 检查严重漏洞
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ fromJSON(needs.build-image.outputs.image-tags)[0] }}
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+
+  # ===== 性能测试 =====
+  performance-test:
+    name: 性能测试
+    runs-on: ubuntu-latest
+    needs: build-image
+    if: ${{ inputs.enable_workflow == true && github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置测试环境
+        run: |
+          cp deployments/.env.example deployments/.env
+          echo "DB_PASSWORD=perftest123" >> deployments/.env
+          echo "JWT_SECRET=performance-test-secret-key" >> deployments/.env
+          echo "ENCRYPTION_KEY=12345678901234567890123456789012" >> deployments/.env
+
+      - name: 启动性能测试环境
+        run: |
+          cd deployments
+          # 使用构建的镜像
+          export IMAGE_TAG=${{ fromJSON(needs.build-image.outputs.image-tags)[0] }}
+          docker-compose up -d
+          timeout 300 bash -c 'until curl -f http://localhost:8080/api/health; do sleep 5; done'
+
+      - name: 安装 K6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: 运行性能测试
+        run: |
+          k6 run --out json=performance-results.json scripts/performance-test.js
+
+      - name: 上传性能测试结果
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-results
+          path: performance-results.json
+
+      - name: 清理性能测试环境
+        if: always()
+        run: |
+          cd deployments
+          docker-compose down -v
+
+  # ===== 部署到 Staging =====
+  deploy-staging:
+    name: 部署到 Staging
+    runs-on: ubuntu-latest
+    needs: [build-image, integration-tests, security-scan]
+    if: ${{ inputs.enable_workflow == true && inputs.environment == 'staging' }}
+    environment: staging
+
+    steps:
+      - name: 部署到 Staging 环境
+        run: |
+          echo "部署镜像 ${{ fromJSON(needs.build-image.outputs.image-tags)[0] }} 到 Staging 环境"
+          # 这里添加您的 staging 部署逻辑
+          # 例如：更新 Kubernetes deployment、调用部署 API 等
+
+      - name: 运行冒烟测试
+        run: |
+          # 运行基本的冒烟测试确保部署成功
+          timeout 60 bash -c 'until curl -f https://staging.domain-max.com/api/health; do sleep 5; done'
+          echo "Staging 环境部署成功"
+
+  # ===== 部署到 Production =====
+  deploy-production:
+    name: 部署到 Production
+    runs-on: ubuntu-latest
+    needs: [build-image, integration-tests, security-scan, performance-test]
+    if: ${{ inputs.enable_workflow == true && inputs.environment == 'production' }}
+    environment: production
+
+    steps:
+      - name: 部署到 Production 环境
+        run: |
+          echo "部署镜像 ${{ fromJSON(needs.build-image.outputs.image-tags)[0] }} 到 Production 环境"
+          # 这里添加您的 production 部署逻辑
+
+      - name: 运行冒烟测试
+        run: |
+          # 运行生产环境冒烟测试
+          timeout 60 bash -c 'until curl -f https://domain-max.com/api/health; do sleep 5; done'
+          echo "Production 环境部署成功"
+
+      - name: 通知部署成功
+        uses: 8398a7/action-slack@v3
+        if: success()
+        with:
+          status: success
+          text: "🚀 Domain MAX 已成功部署到生产环境"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: 通知部署失败
+        uses: 8398a7/action-slack@v3
+        if: failure()
+        with:
+          status: failure
+          text: "❌ Domain MAX 生产环境部署失败"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ===== 清理 =====
+  cleanup:
+    name: 清理资源
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: ${{ inputs.enable_workflow == true && always() }}
+
+    steps:
+      - name: 清理旧镜像
+        run: |
+          echo "清理旧的 Docker 镜像和缓存"
+          # 保留最近的 5 个版本，删除其他的
+          # 这里可以添加清理逻辑

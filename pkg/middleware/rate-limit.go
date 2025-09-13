@@ -8,6 +8,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RateLimitMiddleware 简单的速率限制中间件
+func RateLimitMiddleware() gin.HandlerFunc {
+	// 创建默认的速率限制器
+	limiter := NewRateLimiter(time.Minute, 100) // 每分钟100个请求
+	return limiter.RateLimitMiddleware()
+}
+
 // RateLimiter 速率限制器
 type RateLimiter struct {
 	visitors map[string]*Visitor

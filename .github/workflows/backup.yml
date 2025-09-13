@@ -1,0 +1,528 @@
+# 备份工作流（默认禁用）
+name: Backup
+
+on:
+  # 默认禁用自动触发，需要手动启用
+  # schedule:
+  #   # 每天凌晨 4:00 UTC 执行备份
+  #   - cron: "0 4 * * *"
+  #   # 每周日凌晨 2:00 UTC 执行完整备份
+  #   - cron: "0 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      enable_workflow:
+        description: "启用工作流（默认禁用）"
+        required: true
+        default: false
+        type: boolean
+      backup_type:
+        description: "备份类型"
+        required: true
+        default: "incremental"
+        type: choice
+        options:
+          - incremental
+          - full
+      retention_days:
+        description: "保留天数"
+        required: false
+        default: "30"
+        type: string
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  BACKUP_BUCKET: ${{ secrets.BACKUP_BUCKET }}
+  BACKUP_TYPE: ${{ inputs.backup_type || 'incremental' }}
+  RETENTION_DAYS: ${{ inputs.retention_days || '30' }}
+
+jobs:
+  # ===== 数据库备份 =====
+  database-backup:
+    name: 数据库备份
+    runs-on: ubuntu-latest
+    if: ${{ inputs.enable_workflow == true && env.BACKUP_BUCKET != '' }}
+    outputs:
+      backup-file: ${{ steps.backup.outputs.backup-file }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置备份环境
+        run: |
+          # 创建备份目录
+          mkdir -p backups/$(date +%Y%m%d)
+
+          # 设置备份文件名
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BACKUP_FILE="domain-max-db-${BACKUP_TYPE}-${TIMESTAMP}.sql.gz"
+          echo "BACKUP_FILE=$BACKUP_FILE" >> $GITHUB_ENV
+
+      - name: 启动数据库服务
+        run: |
+          # 使用测试配置启动数据库
+          cd deployments
+          cp .env.example .env
+          echo "DB_PASSWORD=backup123" >> .env
+          echo "JWT_SECRET=backup-test-secret" >> .env
+          echo "ENCRYPTION_KEY=12345678901234567890123456789012" >> .env
+
+          # 只启动数据库服务
+          docker-compose up -d postgres
+
+          # 等待数据库启动
+          timeout 60 bash -c 'until docker-compose exec -T postgres pg_isready -U postgres; do sleep 5; done'
+
+      - name: 执行数据库备份
+        id: backup
+        run: |
+          cd deployments
+
+          if [ "$BACKUP_TYPE" = "full" ]; then
+            echo "执行完整数据库备份..."
+            docker-compose exec -T postgres pg_dumpall -U postgres | gzip > "../backups/$(date +%Y%m%d)/$BACKUP_FILE"
+          else
+            echo "执行增量数据库备份..."
+            docker-compose exec -T postgres pg_dump -U postgres domain_manager | gzip > "../backups/$(date +%Y%m%d)/$BACKUP_FILE"
+          fi
+
+          # 验证备份文件
+          if [ -f "../backups/$(date +%Y%m%d)/$BACKUP_FILE" ]; then
+            BACKUP_SIZE=$(stat -c%s "../backups/$(date +%Y%m%d)/$BACKUP_FILE")
+            echo "备份文件大小: $BACKUP_SIZE bytes"
+            
+            if [ $BACKUP_SIZE -lt 1000 ]; then
+              echo "错误: 备份文件太小，可能备份失败"
+              exit 1
+            fi
+            
+            echo "backup-file=backups/$(date +%Y%m%d)/$BACKUP_FILE" >> $GITHUB_OUTPUT
+          else
+            echo "错误: 备份文件未创建"
+            exit 1
+          fi
+
+      - name: 上传备份到 GitHub Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: database-backup-${{ env.BACKUP_TYPE }}
+          path: backups/
+          retention-days: 7
+
+      - name: 配置 AWS CLI
+        if: env.BACKUP_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 上传备份到 S3
+        if: env.BACKUP_BUCKET != ''
+        run: |
+          BACKUP_PATH="backups/$(date +%Y%m%d)/$BACKUP_FILE"
+          S3_PATH="s3://$BACKUP_BUCKET/database/$(date +%Y)/$(date +%m)/$BACKUP_FILE"
+
+          echo "上传备份到 S3: $S3_PATH"
+          aws s3 cp "$BACKUP_PATH" "$S3_PATH"
+
+          # 设置备份标签
+          aws s3api put-object-tagging \
+            --bucket "$BACKUP_BUCKET" \
+            --key "database/$(date +%Y)/$(date +%m)/$BACKUP_FILE" \
+            --tagging "TagSet=[{Key=BackupType,Value=$BACKUP_TYPE},{Key=Project,Value=domain-max},{Key=Date,Value=$(date +%Y%m%d)}]"
+
+      - name: 清理本地备份
+        run: |
+          rm -rf backups/
+
+      - name: 停止数据库服务
+        if: always()
+        run: |
+          cd deployments
+          docker-compose down -v
+
+  # ===== 配置文件备份 =====
+  config-backup:
+    name: 配置文件备份
+    runs-on: ubuntu-latest
+    outputs:
+      config-backup-file: ${{ steps.backup.outputs.config-backup-file }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 创建配置备份
+        id: backup
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          CONFIG_BACKUP_FILE="domain-max-config-${TIMESTAMP}.tar.gz"
+
+          # 备份配置文件和脚本
+          tar -czf "$CONFIG_BACKUP_FILE" \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='*.log' \
+            --exclude='.env' \
+            deployments/ \
+            scripts/ \
+            docs/ \
+            configs/ \
+            README.md \
+            LICENSE \
+            Makefile
+
+          echo "config-backup-file=$CONFIG_BACKUP_FILE" >> $GITHUB_OUTPUT
+
+          # 验证备份文件
+          if [ -f "$CONFIG_BACKUP_FILE" ]; then
+            echo "配置备份文件创建成功: $CONFIG_BACKUP_FILE"
+            ls -lh "$CONFIG_BACKUP_FILE"
+          else
+            echo "错误: 配置备份文件创建失败"
+            exit 1
+          fi
+
+      - name: 上传配置备份到 GitHub Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: config-backup
+          path: ${{ steps.backup.outputs.config-backup-file }}
+          retention-days: 30
+
+      - name: 配置 AWS CLI
+        if: env.BACKUP_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 上传配置备份到 S3
+        if: env.BACKUP_BUCKET != ''
+        run: |
+          CONFIG_FILE="${{ steps.backup.outputs.config-backup-file }}"
+          S3_PATH="s3://$BACKUP_BUCKET/configs/$(date +%Y)/$(date +%m)/$CONFIG_FILE"
+
+          echo "上传配置备份到 S3: $S3_PATH"
+          aws s3 cp "$CONFIG_FILE" "$S3_PATH"
+
+          # 设置备份标签
+          aws s3api put-object-tagging \
+            --bucket "$BACKUP_BUCKET" \
+            --key "configs/$(date +%Y)/$(date +%m)/$CONFIG_FILE" \
+            --tagging "TagSet=[{Key=BackupType,Value=config},{Key=Project,Value=domain-max},{Key=Date,Value=$(date +%Y%m%d)}]"
+
+  # ===== 容器镜像备份 =====
+  image-backup:
+    name: 容器镜像备份
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && github.event.schedule == '0 2 * * 0'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录到容器注册表
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送备份镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./deployments/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:backup-$(date +%Y%m%d)
+            ghcr.io/${{ github.repository }}:backup-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 导出镜像到文件
+        if: env.BACKUP_BUCKET != ''
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          IMAGE_BACKUP_FILE="domain-max-image-${TIMESTAMP}.tar.gz"
+
+          # 导出镜像
+          docker save ghcr.io/${{ github.repository }}:backup-latest | gzip > "$IMAGE_BACKUP_FILE"
+
+          echo "镜像备份文件: $IMAGE_BACKUP_FILE"
+          ls -lh "$IMAGE_BACKUP_FILE"
+
+      - name: 配置 AWS CLI
+        if: env.BACKUP_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 上传镜像备份到 S3
+        if: env.BACKUP_BUCKET != ''
+        run: |
+          IMAGE_FILE="domain-max-image-$(date +%Y%m%d_%H%M%S).tar.gz"
+          S3_PATH="s3://$BACKUP_BUCKET/images/$(date +%Y)/$(date +%m)/$IMAGE_FILE"
+
+          echo "上传镜像备份到 S3: $S3_PATH"
+          aws s3 cp "$IMAGE_FILE" "$S3_PATH"
+
+  # ===== 清理旧备份 =====
+  cleanup-old-backups:
+    name: 清理旧备份
+    runs-on: ubuntu-latest
+    needs: [database-backup, config-backup]
+    if: always() && env.BACKUP_BUCKET != ''
+
+    steps:
+      - name: 配置 AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 清理过期的数据库备份
+        run: |
+          echo "清理 $RETENTION_DAYS 天前的数据库备份..."
+
+          # 列出超过保留期的备份文件
+          CUTOFF_DATE=$(date -d "$RETENTION_DAYS days ago" +%Y-%m-%d)
+
+          aws s3api list-objects-v2 \
+            --bucket "$BACKUP_BUCKET" \
+            --prefix "database/" \
+            --query "Contents[?LastModified<='$CUTOFF_DATE'].Key" \
+            --output text | while read -r key; do
+              if [ -n "$key" ] && [ "$key" != "None" ]; then
+                echo "删除过期备份: $key"
+                aws s3 rm "s3://$BACKUP_BUCKET/$key"
+              fi
+            done
+
+      - name: 清理过期的配置备份
+        run: |
+          echo "清理 $RETENTION_DAYS 天前的配置备份..."
+
+          CUTOFF_DATE=$(date -d "$RETENTION_DAYS days ago" +%Y-%m-%d)
+
+          aws s3api list-objects-v2 \
+            --bucket "$BACKUP_BUCKET" \
+            --prefix "configs/" \
+            --query "Contents[?LastModified<='$CUTOFF_DATE'].Key" \
+            --output text | while read -r key; do
+              if [ -n "$key" ] && [ "$key" != "None" ]; then
+                echo "删除过期配置备份: $key"
+                aws s3 rm "s3://$BACKUP_BUCKET/$key"
+              fi
+            done
+
+      - name: 清理过期的镜像备份
+        run: |
+          echo "清理 90 天前的镜像备份..."
+
+          CUTOFF_DATE=$(date -d "90 days ago" +%Y-%m-%d)
+
+          aws s3api list-objects-v2 \
+            --bucket "$BACKUP_BUCKET" \
+            --prefix "images/" \
+            --query "Contents[?LastModified<='$CUTOFF_DATE'].Key" \
+            --output text | while read -r key; do
+              if [ -n "$key" ] && [ "$key" != "None" ]; then
+                echo "删除过期镜像备份: $key"
+                aws s3 rm "s3://$BACKUP_BUCKET/$key"
+              fi
+            done
+
+  # ===== 备份验证 =====
+  verify-backup:
+    name: 验证备份
+    runs-on: ubuntu-latest
+    needs: [database-backup, config-backup]
+    if: always() && needs.database-backup.result == 'success'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载数据库备份
+        uses: actions/download-artifact@v3
+        with:
+          name: database-backup-${{ env.BACKUP_TYPE }}
+          path: backup-verification/
+
+      - name: 验证数据库备份
+        run: |
+          cd backup-verification
+
+          # 查找备份文件
+          BACKUP_FILE=$(find . -name "*.sql.gz" | head -1)
+
+          if [ -n "$BACKUP_FILE" ]; then
+            echo "找到备份文件: $BACKUP_FILE"
+            
+            # 检查文件大小
+            SIZE=$(stat -c%s "$BACKUP_FILE")
+            echo "备份文件大小: $SIZE bytes"
+            
+            if [ $SIZE -lt 1000 ]; then
+              echo "错误: 备份文件太小"
+              exit 1
+            fi
+            
+            # 检查文件完整性
+            if zcat "$BACKUP_FILE" | head -10 | grep -q "PostgreSQL"; then
+              echo "✅ 备份文件验证通过"
+            else
+              echo "❌ 备份文件验证失败"
+              exit 1
+            fi
+          else
+            echo "❌ 未找到备份文件"
+            exit 1
+          fi
+
+      - name: 测试备份恢复
+        run: |
+          cd deployments
+
+          # 启动测试数据库
+          cp .env.example .env
+          echo "DB_PASSWORD=restore_test123" >> .env
+          echo "JWT_SECRET=restore-test-secret" >> .env
+          echo "ENCRYPTION_KEY=12345678901234567890123456789012" >> .env
+
+          docker-compose up -d postgres
+          timeout 60 bash -c 'until docker-compose exec -T postgres pg_isready -U postgres; do sleep 5; done'
+
+          # 尝试恢复备份
+          BACKUP_FILE=$(find ../backup-verification -name "*.sql.gz" | head -1)
+
+          if [ -n "$BACKUP_FILE" ]; then
+            echo "测试恢复备份文件: $BACKUP_FILE"
+            zcat "$BACKUP_FILE" | docker-compose exec -T postgres psql -U postgres -d domain_manager
+            
+            # 验证恢复结果
+            TABLES=$(docker-compose exec -T postgres psql -U postgres -d domain_manager -c "\dt" | grep -c "table")
+            echo "恢复后数据库表数量: $TABLES"
+            
+            if [ $TABLES -gt 0 ]; then
+              echo "✅ 备份恢复测试通过"
+            else
+              echo "❌ 备份恢复测试失败"
+              exit 1
+            fi
+          fi
+
+          # 清理测试环境
+          docker-compose down -v
+
+  # ===== 生成备份报告 =====
+  backup-report:
+    name: 生成备份报告
+    runs-on: ubuntu-latest
+    needs: [database-backup, config-backup, image-backup, verify-backup]
+    if: always()
+
+    steps:
+      - name: 生成备份报告
+        run: |
+          echo "# 📦 Domain MAX 备份报告" > backup-report.md
+          echo "" >> backup-report.md
+          echo "**备份时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> backup-report.md
+          echo "**备份类型**: $BACKUP_TYPE" >> backup-report.md
+          echo "**保留期限**: $RETENTION_DAYS 天" >> backup-report.md
+          echo "" >> backup-report.md
+
+          echo "## 📋 备份状态" >> backup-report.md
+          echo "" >> backup-report.md
+          echo "| 备份项目 | 状态 | 说明 |" >> backup-report.md
+          echo "|---------|------|------|" >> backup-report.md
+          echo "| 数据库备份 | ${{ needs.database-backup.result == 'success' && '✅ 成功' || '❌ 失败' }} | PostgreSQL 数据库备份 |" >> backup-report.md
+          echo "| 配置备份 | ${{ needs.config-backup.result == 'success' && '✅ 成功' || '❌ 失败' }} | 配置文件和脚本备份 |" >> backup-report.md
+          echo "| 镜像备份 | ${{ needs.image-backup.result == 'success' && '✅ 成功' || needs.image-backup.result == 'skipped' && '⏭️ 跳过' || '❌ 失败' }} | Docker 镜像备份 |" >> backup-report.md
+          echo "| 备份验证 | ${{ needs.verify-backup.result == 'success' && '✅ 通过' || '❌ 失败' }} | 备份文件完整性验证 |" >> backup-report.md
+          echo "" >> backup-report.md
+
+          echo "## 📊 备份统计" >> backup-report.md
+          echo "" >> backup-report.md
+          echo "- **数据库备份**: ${{ needs.database-backup.outputs.backup-file || '未生成' }}" >> backup-report.md
+          echo "- **配置备份**: ${{ needs.config-backup.outputs.config-backup-file || '未生成' }}" >> backup-report.md
+          echo "- **存储位置**: ${{ env.BACKUP_BUCKET && 'AWS S3' || 'GitHub Artifacts' }}" >> backup-report.md
+          echo "" >> backup-report.md
+
+          echo "## 🔄 恢复说明" >> backup-report.md
+          echo "" >> backup-report.md
+          echo "如需恢复备份，请按照以下步骤操作：" >> backup-report.md
+          echo "" >> backup-report.md
+          echo "### 数据库恢复" >> backup-report.md
+          echo "\`\`\`bash" >> backup-report.md
+          echo "# 下载备份文件" >> backup-report.md
+          echo "aws s3 cp s3://$BACKUP_BUCKET/database/YYYY/MM/backup-file.sql.gz ." >> backup-report.md
+          echo "" >> backup-report.md
+          echo "# 恢复数据库" >> backup-report.md
+          echo "zcat backup-file.sql.gz | docker-compose exec -T postgres psql -U postgres -d domain_manager" >> backup-report.md
+          echo "\`\`\`" >> backup-report.md
+          echo "" >> backup-report.md
+          echo "### 配置恢复" >> backup-report.md
+          echo "\`\`\`bash" >> backup-report.md
+          echo "# 下载配置备份" >> backup-report.md
+          echo "aws s3 cp s3://$BACKUP_BUCKET/configs/YYYY/MM/config-file.tar.gz ." >> backup-report.md
+          echo "" >> backup-report.md
+          echo "# 解压配置文件" >> backup-report.md
+          echo "tar -xzf config-file.tar.gz" >> backup-report.md
+          echo "\`\`\`" >> backup-report.md
+
+      - name: 上传备份报告
+        uses: actions/upload-artifact@v3
+        with:
+          name: backup-report
+          path: backup-report.md
+
+      - name: 发送备份通知
+        if: github.event_name == 'schedule' && secrets.SLACK_WEBHOOK_URL
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "text": "📦 Domain MAX 备份任务完成",
+              "attachments": [
+                {
+                  "color": "${{ contains(needs.*.result, 'failure') && 'danger' || 'good' }}",
+                  "fields": [
+                    {
+                      "title": "备份类型",
+                      "value": "${{ env.BACKUP_TYPE }}",
+                      "short": true
+                    },
+                    {
+                      "title": "备份状态",
+                      "value": "${{ contains(needs.*.result, 'failure') && '部分失败' || '全部成功' }}",
+                      "short": true
+                    },
+                    {
+                      "title": "数据库备份",
+                      "value": "${{ needs.database-backup.result }}",
+                      "short": true
+                    },
+                    {
+                      "title": "配置备份",
+                      "value": "${{ needs.config-backup.result }}",
+                      "short": true
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

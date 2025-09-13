@@ -1,0 +1,634 @@
+# 监控工作流（默认禁用）
+name: Monitoring
+
+on:
+  # 默认禁用自动触发，需要手动启用
+  # schedule:
+  #   # 每5分钟检查一次应用健康状态
+  #   - cron: "*/5 * * * *"
+  #   # 每小时生成性能报告
+  #   - cron: "0 * * * *"
+  #   # 每天生成完整监控报告
+  #   - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      enable_workflow:
+        description: "启用工作流（默认禁用）"
+        required: true
+        default: false
+        type: boolean
+      monitoring_type:
+        description: "监控类型"
+        required: true
+        default: "health"
+        type: choice
+        options:
+          - health
+          - performance
+          - security
+          - full
+      environment:
+        description: "环境"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  ENVIRONMENT: ${{ inputs.environment || 'production' }}
+  MONITORING_TYPE: ${{ inputs.monitoring_type || 'health' }}
+
+jobs:
+  # ===== 健康检查 =====
+  health-check:
+    name: 应用健康检查
+    runs-on: ubuntu-latest
+    if: ${{ inputs.enable_workflow == true && (contains(inputs.monitoring_type, 'health') || inputs.monitoring_type == 'full') }}
+    outputs:
+      app-status: ${{ steps.check.outputs.app-status }}
+      db-status: ${{ steps.check.outputs.db-status }}
+      api-status: ${{ steps.check.outputs.api-status }}
+      overall-status: ${{ steps.check.outputs.overall-status }}
+
+    steps:
+      - name: 设置环境变量
+        run: |
+          if [ "$ENVIRONMENT" = "production" ]; then
+            echo "APP_URL=${{ secrets.PROD_APP_URL }}" >> $GITHUB_ENV
+            echo "API_URL=${{ secrets.PROD_API_URL }}" >> $GITHUB_ENV
+          else
+            echo "APP_URL=${{ secrets.STAGING_APP_URL }}" >> $GITHUB_ENV
+            echo "API_URL=${{ secrets.STAGING_API_URL }}" >> $GITHUB_ENV
+          fi
+
+      - name: 检查应用健康状态
+        id: check
+        run: |
+          echo "开始健康检查..."
+
+          # 初始化状态
+          APP_STATUS="unknown"
+          DB_STATUS="unknown"
+          API_STATUS="unknown"
+          OVERALL_STATUS="healthy"
+
+          # 检查应用主页
+          if [ -n "$APP_URL" ]; then
+            echo "检查应用主页: $APP_URL"
+            if curl -s -o /dev/null -w "%{http_code}" "$APP_URL" | grep -q "200"; then
+              APP_STATUS="healthy"
+              echo "✅ 应用主页正常"
+            else
+              APP_STATUS="unhealthy"
+              OVERALL_STATUS="unhealthy"
+              echo "❌ 应用主页异常"
+            fi
+          else
+            echo "⚠️ 未配置应用URL"
+          fi
+
+          # 检查API健康端点
+          if [ -n "$API_URL" ]; then
+            echo "检查API健康端点: $API_URL/health"
+            HEALTH_RESPONSE=$(curl -s "$API_URL/health" 2>/dev/null || echo '{"status":"error"}')
+            
+            if echo "$HEALTH_RESPONSE" | grep -q '"status":"ok"'; then
+              API_STATUS="healthy"
+              echo "✅ API健康检查正常"
+              
+              # 检查数据库连接
+              if echo "$HEALTH_RESPONSE" | grep -q '"database":"connected"'; then
+                DB_STATUS="healthy"
+                echo "✅ 数据库连接正常"
+              else
+                DB_STATUS="unhealthy"
+                OVERALL_STATUS="unhealthy"
+                echo "❌ 数据库连接异常"
+              fi
+            else
+              API_STATUS="unhealthy"
+              OVERALL_STATUS="unhealthy"
+              echo "❌ API健康检查失败"
+              echo "响应: $HEALTH_RESPONSE"
+            fi
+          else
+            echo "⚠️ 未配置API URL"
+          fi
+
+          # 输出状态
+          echo "app-status=$APP_STATUS" >> $GITHUB_OUTPUT
+          echo "db-status=$DB_STATUS" >> $GITHUB_OUTPUT
+          echo "api-status=$API_STATUS" >> $GITHUB_OUTPUT
+          echo "overall-status=$OVERALL_STATUS" >> $GITHUB_OUTPUT
+
+          echo "=== 健康检查结果 ==="
+          echo "应用状态: $APP_STATUS"
+          echo "API状态: $API_STATUS"
+          echo "数据库状态: $DB_STATUS"
+          echo "整体状态: $OVERALL_STATUS"
+
+      - name: 检查SSL证书
+        run: |
+          if [ -n "$APP_URL" ]; then
+            DOMAIN=$(echo "$APP_URL" | sed 's|https\?://||' | sed 's|/.*||')
+            echo "检查SSL证书: $DOMAIN"
+            
+            # 获取证书到期时间
+            CERT_INFO=$(echo | openssl s_client -servername "$DOMAIN" -connect "$DOMAIN:443" 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "")
+            
+            if [ -n "$CERT_INFO" ]; then
+              EXPIRY_DATE=$(echo "$CERT_INFO" | grep "notAfter" | cut -d= -f2)
+              EXPIRY_TIMESTAMP=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null || echo "0")
+              CURRENT_TIMESTAMP=$(date +%s)
+              DAYS_UNTIL_EXPIRY=$(( (EXPIRY_TIMESTAMP - CURRENT_TIMESTAMP) / 86400 ))
+              
+              echo "SSL证书到期时间: $EXPIRY_DATE"
+              echo "距离到期还有: $DAYS_UNTIL_EXPIRY 天"
+              
+              if [ $DAYS_UNTIL_EXPIRY -lt 30 ]; then
+                echo "⚠️ SSL证书即将到期 ($DAYS_UNTIL_EXPIRY 天)"
+                echo "SSL_WARNING=true" >> $GITHUB_ENV
+              else
+                echo "✅ SSL证书正常"
+              fi
+            else
+              echo "⚠️ 无法获取SSL证书信息"
+            fi
+          fi
+
+      - name: 检查DNS记录
+        run: |
+          if [ -n "$APP_URL" ]; then
+            DOMAIN=$(echo "$APP_URL" | sed 's|https\?://||' | sed 's|/.*||')
+            echo "检查DNS记录: $DOMAIN"
+            
+            # 检查A记录
+            A_RECORD=$(dig +short "$DOMAIN" A 2>/dev/null || echo "")
+            if [ -n "$A_RECORD" ]; then
+              echo "✅ A记录: $A_RECORD"
+            else
+              echo "❌ A记录解析失败"
+            fi
+            
+            # 检查AAAA记录（IPv6）
+            AAAA_RECORD=$(dig +short "$DOMAIN" AAAA 2>/dev/null || echo "")
+            if [ -n "$AAAA_RECORD" ]; then
+              echo "✅ AAAA记录: $AAAA_RECORD"
+            else
+              echo "⚠️ 无IPv6记录"
+            fi
+          fi
+
+  # ===== 性能监控 =====
+  performance-check:
+    name: 性能监控
+    runs-on: ubuntu-latest
+    if: contains(env.MONITORING_TYPE, 'performance') || env.MONITORING_TYPE == 'full'
+    outputs:
+      response-time: ${{ steps.perf.outputs.response-time }}
+      page-load-time: ${{ steps.perf.outputs.page-load-time }}
+      performance-score: ${{ steps.perf.outputs.performance-score }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置环境变量
+        run: |
+          if [ "$ENVIRONMENT" = "production" ]; then
+            echo "APP_URL=${{ secrets.PROD_APP_URL }}" >> $GITHUB_ENV
+            echo "API_URL=${{ secrets.PROD_API_URL }}" >> $GITHUB_ENV
+          else
+            echo "APP_URL=${{ secrets.STAGING_APP_URL }}" >> $GITHUB_ENV
+            echo "API_URL=${{ secrets.STAGING_API_URL }}" >> $GITHUB_ENV
+          fi
+
+      - name: 性能基准测试
+        id: perf
+        run: |
+          echo "开始性能监控..."
+
+          # API响应时间测试
+          if [ -n "$API_URL" ]; then
+            echo "测试API响应时间..."
+            
+            # 测试登录API
+            LOGIN_TIME=$(curl -w "%{time_total}" -s -o /dev/null "$API_URL/auth/health" 2>/dev/null || echo "0")
+            
+            # 测试域名API
+            DOMAIN_TIME=$(curl -w "%{time_total}" -s -o /dev/null "$API_URL/domains" 2>/dev/null || echo "0")
+            
+            # 计算平均响应时间
+            RESPONSE_TIME=$(echo "scale=3; ($LOGIN_TIME + $DOMAIN_TIME) / 2" | bc 2>/dev/null || echo "0")
+            
+            echo "平均API响应时间: ${RESPONSE_TIME}s"
+            echo "response-time=$RESPONSE_TIME" >> $GITHUB_OUTPUT
+            
+            # 响应时间警告阈值
+            if (( $(echo "$RESPONSE_TIME > 2.0" | bc -l) )); then
+              echo "⚠️ API响应时间过慢: ${RESPONSE_TIME}s"
+              echo "API_SLOW=true" >> $GITHUB_ENV
+            else
+              echo "✅ API响应时间正常"
+            fi
+          fi
+
+      - name: 页面加载性能测试
+        run: |
+          if [ -n "$APP_URL" ]; then
+            echo "测试页面加载性能..."
+            
+            # 使用curl测试页面加载时间
+            PAGE_LOAD_TIME=$(curl -w "%{time_total}" -s -o /dev/null "$APP_URL" 2>/dev/null || echo "0")
+            echo "页面加载时间: ${PAGE_LOAD_TIME}s"
+            echo "page-load-time=$PAGE_LOAD_TIME" >> $GITHUB_OUTPUT
+            
+            # 页面加载时间警告阈值
+            if (( $(echo "$PAGE_LOAD_TIME > 5.0" | bc -l) )); then
+              echo "⚠️ 页面加载时间过慢: ${PAGE_LOAD_TIME}s"
+              echo "PAGE_SLOW=true" >> $GITHUB_ENV
+            else
+              echo "✅ 页面加载时间正常"
+            fi
+          fi
+
+      - name: 计算性能评分
+        run: |
+          # 基于响应时间和页面加载时间计算性能评分
+          RESPONSE_TIME="${{ steps.perf.outputs.response-time }}"
+          PAGE_LOAD_TIME="${{ steps.perf.outputs.page-load-time }}"
+
+          if [ -n "$RESPONSE_TIME" ] && [ -n "$PAGE_LOAD_TIME" ]; then
+            # 简单的评分算法（100分制）
+            SCORE=100
+            
+            # API响应时间扣分
+            if (( $(echo "$RESPONSE_TIME > 1.0" | bc -l) )); then
+              SCORE=$((SCORE - 20))
+            elif (( $(echo "$RESPONSE_TIME > 0.5" | bc -l) )); then
+              SCORE=$((SCORE - 10))
+            fi
+            
+            # 页面加载时间扣分
+            if (( $(echo "$PAGE_LOAD_TIME > 3.0" | bc -l) )); then
+              SCORE=$((SCORE - 30))
+            elif (( $(echo "$PAGE_LOAD_TIME > 2.0" | bc -l) )); then
+              SCORE=$((SCORE - 15))
+            fi
+            
+            echo "性能评分: $SCORE/100"
+            echo "performance-score=$SCORE" >> $GITHUB_OUTPUT
+            
+            if [ $SCORE -lt 70 ]; then
+              echo "⚠️ 性能评分较低: $SCORE/100"
+              echo "PERFORMANCE_LOW=true" >> $GITHUB_ENV
+            else
+              echo "✅ 性能评分良好: $SCORE/100"
+            fi
+          fi
+
+  # ===== 安全监控 =====
+  security-check:
+    name: 安全监控
+    runs-on: ubuntu-latest
+    if: contains(env.MONITORING_TYPE, 'security') || env.MONITORING_TYPE == 'full'
+    outputs:
+      security-score: ${{ steps.security.outputs.security-score }}
+      vulnerabilities: ${{ steps.security.outputs.vulnerabilities }}
+
+    steps:
+      - name: 设置环境变量
+        run: |
+          if [ "$ENVIRONMENT" = "production" ]; then
+            echo "APP_URL=${{ secrets.PROD_APP_URL }}" >> $GITHUB_ENV
+            echo "API_URL=${{ secrets.PROD_API_URL }}" >> $GITHUB_ENV
+          else
+            echo "APP_URL=${{ secrets.STAGING_APP_URL }}" >> $GITHUB_ENV
+            echo "API_URL=${{ secrets.STAGING_API_URL }}" >> $GITHUB_ENV
+          fi
+
+      - name: 安全检查
+        id: security
+        run: |
+          echo "开始安全监控..."
+
+          SECURITY_SCORE=100
+          VULNERABILITIES=0
+
+          if [ -n "$APP_URL" ]; then
+            DOMAIN=$(echo "$APP_URL" | sed 's|https\?://||' | sed 's|/.*||')
+            
+            # 检查HTTP安全头
+            echo "检查HTTP安全头..."
+            HEADERS=$(curl -I -s "$APP_URL" 2>/dev/null || echo "")
+            
+            # 检查重要的安全头
+            if ! echo "$HEADERS" | grep -qi "strict-transport-security"; then
+              echo "❌ 缺少HSTS头"
+              SECURITY_SCORE=$((SECURITY_SCORE - 10))
+              VULNERABILITIES=$((VULNERABILITIES + 1))
+            fi
+            
+            if ! echo "$HEADERS" | grep -qi "x-frame-options"; then
+              echo "❌ 缺少X-Frame-Options头"
+              SECURITY_SCORE=$((SECURITY_SCORE - 10))
+              VULNERABILITIES=$((VULNERABILITIES + 1))
+            fi
+            
+            if ! echo "$HEADERS" | grep -qi "x-content-type-options"; then
+              echo "❌ 缺少X-Content-Type-Options头"
+              SECURITY_SCORE=$((SECURITY_SCORE - 5))
+              VULNERABILITIES=$((VULNERABILITIES + 1))
+            fi
+            
+            if ! echo "$HEADERS" | grep -qi "content-security-policy"; then
+              echo "❌ 缺少CSP头"
+              SECURITY_SCORE=$((SECURITY_SCORE - 15))
+              VULNERABILITIES=$((VULNERABILITIES + 1))
+            fi
+            
+            # 检查是否强制HTTPS
+            HTTP_URL=$(echo "$APP_URL" | sed 's|https://|http://|')
+            HTTP_RESPONSE=$(curl -I -s "$HTTP_URL" 2>/dev/null || echo "")
+            
+            if ! echo "$HTTP_RESPONSE" | grep -qi "location.*https"; then
+              echo "❌ 未强制HTTPS重定向"
+              SECURITY_SCORE=$((SECURITY_SCORE - 20))
+              VULNERABILITIES=$((VULNERABILITIES + 1))
+            fi
+          fi
+
+          echo "安全评分: $SECURITY_SCORE/100"
+          echo "发现漏洞: $VULNERABILITIES 个"
+
+          echo "security-score=$SECURITY_SCORE" >> $GITHUB_OUTPUT
+          echo "vulnerabilities=$VULNERABILITIES" >> $GITHUB_OUTPUT
+
+          if [ $SECURITY_SCORE -lt 80 ]; then
+            echo "⚠️ 安全评分较低: $SECURITY_SCORE/100"
+            echo "SECURITY_LOW=true" >> $GITHUB_ENV
+          else
+            echo "✅ 安全评分良好: $SECURITY_SCORE/100"
+          fi
+
+      - name: 端口扫描检查
+        run: |
+          if [ -n "$APP_URL" ]; then
+            DOMAIN=$(echo "$APP_URL" | sed 's|https\?://||' | sed 's|/.*||')
+            echo "检查常见端口状态..."
+            
+            # 检查常见不安全端口是否开放
+            DANGEROUS_PORTS="21 22 23 25 53 110 143 993 995 1433 3306 5432 6379 27017"
+            
+            for port in $DANGEROUS_PORTS; do
+              if timeout 3 nc -z "$DOMAIN" "$port" 2>/dev/null; then
+                echo "⚠️ 发现开放端口: $port"
+                echo "OPEN_PORTS=true" >> $GITHUB_ENV
+              fi
+            done
+          fi
+
+  # ===== 资源使用监控 =====
+  resource-check:
+    name: 资源使用监控
+    runs-on: ubuntu-latest
+    if: env.MONITORING_TYPE == 'full'
+
+    steps:
+      - name: 检查域名解析性能
+        run: |
+          if [ -n "${{ env.APP_URL }}" ]; then
+            DOMAIN=$(echo "${{ env.APP_URL }}" | sed 's|https\?://||' | sed 's|/.*||')
+            echo "检查DNS解析性能..."
+            
+            # 测试DNS解析时间
+            DNS_TIME=$(dig +stats "$DOMAIN" | grep "Query time" | awk '{print $4}' || echo "0")
+            echo "DNS解析时间: ${DNS_TIME}ms"
+            
+            if [ "$DNS_TIME" -gt 100 ]; then
+              echo "⚠️ DNS解析时间过长: ${DNS_TIME}ms"
+              echo "DNS_SLOW=true" >> $GITHUB_ENV
+            else
+              echo "✅ DNS解析性能正常"
+            fi
+          fi
+
+      - name: 检查CDN性能
+        run: |
+          if [ -n "${{ env.APP_URL }}" ]; then
+            echo "检查CDN性能..."
+            
+            # 检查是否使用CDN
+            CDN_HEADERS=$(curl -I -s "${{ env.APP_URL }}" | grep -i "server\|cache\|cdn" || echo "")
+            
+            if [ -n "$CDN_HEADERS" ]; then
+              echo "✅ 检测到CDN使用"
+              echo "$CDN_HEADERS"
+            else
+              echo "⚠️ 未检测到CDN使用"
+              echo "NO_CDN=true" >> $GITHUB_ENV
+            fi
+          fi
+
+  # ===== 生成监控报告 =====
+  generate-report:
+    name: 生成监控报告
+    runs-on: ubuntu-latest
+    needs: [health-check, performance-check, security-check, resource-check]
+    if: always()
+
+    steps:
+      - name: 生成监控报告
+        run: |
+          echo "# 📊 Domain MAX 监控报告" > monitoring-report.md
+          echo "" >> monitoring-report.md
+          echo "**监控时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> monitoring-report.md
+          echo "**环境**: $ENVIRONMENT" >> monitoring-report.md
+          echo "**监控类型**: $MONITORING_TYPE" >> monitoring-report.md
+          echo "" >> monitoring-report.md
+
+          # 健康状态摘要
+          echo "## 🏥 健康状态摘要" >> monitoring-report.md
+          echo "" >> monitoring-report.md
+
+          OVERALL_STATUS="${{ needs.health-check.outputs.overall-status }}"
+          if [ "$OVERALL_STATUS" = "healthy" ]; then
+            echo "🟢 **整体状态**: 健康" >> monitoring-report.md
+          else
+            echo "🔴 **整体状态**: 异常" >> monitoring-report.md
+          fi
+          echo "" >> monitoring-report.md
+
+          echo "| 检查项目 | 状态 | 详情 |" >> monitoring-report.md
+          echo "|---------|------|------|" >> monitoring-report.md
+          echo "| 应用状态 | ${{ needs.health-check.outputs.app-status == 'healthy' && '✅ 正常' || '❌ 异常' }} | 应用主页访问 |" >> monitoring-report.md
+          echo "| API状态 | ${{ needs.health-check.outputs.api-status == 'healthy' && '✅ 正常' || '❌ 异常' }} | API健康端点 |" >> monitoring-report.md
+          echo "| 数据库状态 | ${{ needs.health-check.outputs.db-status == 'healthy' && '✅ 正常' || '❌ 异常' }} | 数据库连接 |" >> monitoring-report.md
+          echo "" >> monitoring-report.md
+
+          # 性能监控结果
+          if [ "${{ needs.performance-check.result }}" != "skipped" ]; then
+            echo "## ⚡ 性能监控" >> monitoring-report.md
+            echo "" >> monitoring-report.md
+            
+            RESPONSE_TIME="${{ needs.performance-check.outputs.response-time }}"
+            PAGE_LOAD_TIME="${{ needs.performance-check.outputs.page-load-time }}"
+            PERF_SCORE="${{ needs.performance-check.outputs.performance-score }}"
+            
+            echo "| 指标 | 值 | 状态 |" >> monitoring-report.md
+            echo "|------|----|----- |" >> monitoring-report.md
+            echo "| API响应时间 | ${RESPONSE_TIME}s | ${{ env.API_SLOW == 'true' && '⚠️ 偏慢' || '✅ 正常' }} |" >> monitoring-report.md
+            echo "| 页面加载时间 | ${PAGE_LOAD_TIME}s | ${{ env.PAGE_SLOW == 'true' && '⚠️ 偏慢' || '✅ 正常' }} |" >> monitoring-report.md
+            echo "| 性能评分 | ${PERF_SCORE}/100 | ${{ env.PERFORMANCE_LOW == 'true' && '⚠️ 待改进' || '✅ 良好' }} |" >> monitoring-report.md
+            echo "" >> monitoring-report.md
+          fi
+
+          # 安全监控结果
+          if [ "${{ needs.security-check.result }}" != "skipped" ]; then
+            echo "## 🔐 安全监控" >> monitoring-report.md
+            echo "" >> monitoring-report.md
+            
+            SECURITY_SCORE="${{ needs.security-check.outputs.security-score }}"
+            VULNERABILITIES="${{ needs.security-check.outputs.vulnerabilities }}"
+            
+            echo "| 指标 | 值 | 状态 |" >> monitoring-report.md
+            echo "|------|----|----- |" >> monitoring-report.md
+            echo "| 安全评分 | ${SECURITY_SCORE}/100 | ${{ env.SECURITY_LOW == 'true' && '⚠️ 需要关注' || '✅ 良好' }} |" >> monitoring-report.md
+            echo "| 发现漏洞 | ${VULNERABILITIES} 个 | ${{ needs.security-check.outputs.vulnerabilities != '0' && '⚠️ 需要修复' || '✅ 未发现' }} |" >> monitoring-report.md
+            echo "" >> monitoring-report.md
+          fi
+
+          # 警告和建议
+          echo "## ⚠️ 警告和建议" >> monitoring-report.md
+          echo "" >> monitoring-report.md
+
+          HAS_WARNINGS=false
+
+          if [ "${{ env.SSL_WARNING }}" = "true" ]; then
+            echo "- 🔴 **SSL证书即将到期**，请及时续期" >> monitoring-report.md
+            HAS_WARNINGS=true
+          fi
+
+          if [ "${{ env.API_SLOW }}" = "true" ]; then
+            echo "- 🟡 **API响应时间过慢**，建议优化后端性能" >> monitoring-report.md
+            HAS_WARNINGS=true
+          fi
+
+          if [ "${{ env.PAGE_SLOW }}" = "true" ]; then
+            echo "- 🟡 **页面加载时间过长**，建议优化前端资源" >> monitoring-report.md
+            HAS_WARNINGS=true
+          fi
+
+          if [ "${{ env.SECURITY_LOW }}" = "true" ]; then
+            echo "- 🔴 **安全评分较低**，请检查HTTP安全头配置" >> monitoring-report.md
+            HAS_WARNINGS=true
+          fi
+
+          if [ "${{ env.DNS_SLOW }}" = "true" ]; then
+            echo "- 🟡 **DNS解析较慢**，建议检查DNS服务器配置" >> monitoring-report.md
+            HAS_WARNINGS=true
+          fi
+
+          if [ "${{ env.NO_CDN }}" = "true" ]; then
+            echo "- 🟡 **未使用CDN**，建议启用CDN加速" >> monitoring-report.md
+            HAS_WARNINGS=true
+          fi
+
+          if [ "${{ env.OPEN_PORTS }}" = "true" ]; then
+            echo "- 🔴 **发现开放的敏感端口**，请检查防火墙配置" >> monitoring-report.md
+            HAS_WARNINGS=true
+          fi
+
+          if [ "$HAS_WARNINGS" = "false" ]; then
+            echo "✅ 未发现需要关注的问题，系统运行良好。" >> monitoring-report.md
+          fi
+
+          echo "" >> monitoring-report.md
+          echo "---" >> monitoring-report.md
+          echo "*报告生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> monitoring-report.md
+
+      - name: 上传监控报告
+        uses: actions/upload-artifact@v3
+        with:
+          name: monitoring-report-${{ env.ENVIRONMENT }}
+          path: monitoring-report.md
+
+      - name: 发送监控警报
+        if: needs.health-check.outputs.overall-status != 'healthy' || env.SECURITY_LOW == 'true' || env.SSL_WARNING == 'true'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "text": "🚨 Domain MAX 监控警报",
+              "attachments": [
+                {
+                  "color": "danger",
+                  "fields": [
+                    {
+                      "title": "环境",
+                      "value": "${{ env.ENVIRONMENT }}",
+                      "short": true
+                    },
+                    {
+                      "title": "整体状态",
+                      "value": "${{ needs.health-check.outputs.overall-status }}",
+                      "short": true
+                    },
+                    {
+                      "title": "应用状态",
+                      "value": "${{ needs.health-check.outputs.app-status }}",
+                      "short": true
+                    },
+                    {
+                      "title": "数据库状态",
+                      "value": "${{ needs.health-check.outputs.db-status }}",
+                      "short": true
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: 发送性能报告
+        if: github.event.schedule == '0 8 * * *' && secrets.SLACK_WEBHOOK_URL
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "text": "📊 Domain MAX 每日监控报告",
+              "attachments": [
+                {
+                  "color": "${{ needs.health-check.outputs.overall-status == 'healthy' && 'good' || 'warning' }}",
+                  "fields": [
+                    {
+                      "title": "健康状态",
+                      "value": "${{ needs.health-check.outputs.overall-status }}",
+                      "short": true
+                    },
+                    {
+                      "title": "性能评分",
+                      "value": "${{ needs.performance-check.outputs.performance-score }}/100",
+                      "short": true
+                    },
+                    {
+                      "title": "安全评分",
+                      "value": "${{ needs.security-check.outputs.security-score }}/100",
+                      "short": true
+                    },
+                    {
+                      "title": "API响应时间",
+                      "value": "${{ needs.performance-check.outputs.response-time }}s",
+                      "short": true
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

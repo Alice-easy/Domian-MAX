@@ -4,47 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 )
-
-// ValidatePort 验证端口号
-func ValidatePort(port string) error {
-	if port == "" {
-		return errors.New("端口不能为空")
-	}
-	
-	portNum, err := strconv.Atoi(port)
-	if err != nil {
-		return errors.New("端口必须是数字")
-	}
-	
-	if portNum < 1 || portNum > 65535 {
-		return errors.New("端口必须在1-65535之间")
-	}
-	
-	return nil
-}
-
-// ValidateConfigValue 验证配置值
-func ValidateConfigValue(key, value string, isProduction bool) error {
-	if value == "" {
-		return fmt.Errorf("%s 不能为空", key)
-	}
-	
-	switch key {
-	case "JWT_SECRET":
-		return validateJWTSecret(value, isProduction)
-	case "ENCRYPTION_KEY":
-		return validateEncryptionKey(value, isProduction)
-	case "DB_PASSWORD":
-		return validatePassword(value, isProduction)
-	case "SMTP_PASSWORD":
-		return validatePassword(value, isProduction)
-	default:
-		return nil
-	}
-}
 
 // validateJWTSecret 验证JWT密钥
 func validateJWTSecret(secret string, isProduction bool) error {

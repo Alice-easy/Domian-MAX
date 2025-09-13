@@ -1,72 +1,101 @@
-# 多阶段构建 Dockerfile
+# Multi-stage Dockerfile for Domain MAX
 
-# 第一阶段：构建前端
+# Stage 1: Build frontend
 FROM node:18-alpine AS web-builder
 
+# Set working directory
 WORKDIR /app/web
 
-# 复制前端依赖文件
+# Copy package files for better caching
 COPY web/package*.json ./
-RUN npm install
 
-# 复制前端源码并构建
+# Install dependencies with npm ci for production builds
+RUN npm ci --only=production --no-audit --no-fund
+
+# Copy frontend source code
 COPY web/ ./
+
+# Build frontend application
 RUN npm run build
 
-# 第二阶段：构建后端
+# Verify build output
+RUN ls -la dist/ && echo "Frontend build completed successfully"
+
+# Stage 2: Build backend
 FROM golang:1.23-alpine AS server-builder
 
-# 安装必要的工具
-RUN apk add --no-cache git ca-certificates tzdata
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
 
+# Set working directory
 WORKDIR /app
 
-# 复制Go模块文件
+# Copy Go module files for better caching
 COPY go.mod go.sum ./
-RUN go mod download
 
-# 复制源码
+# Download dependencies
+RUN go mod download && go mod verify
+
+# Copy source code
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
 
-# 从第一阶段复制构建好的前端文件
+# Copy built frontend files from previous stage
 COPY --from=web-builder /app/web/dist ./web/dist
 
-# 验证文件结构
-RUN ls -la web/dist/ && ls -la web/dist/static/
+# Verify frontend files are copied
+RUN ls -la web/dist/ && echo "Frontend files copied successfully"
 
-# 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o domain-max ./cmd/server
+# Build the application with optimizations
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -a -installsuffix cgo \
+    -ldflags="-w -s" \
+    -o domain-max ./cmd/server
 
-# 第三阶段：运行时镜像
+# Verify binary
+RUN file domain-max && ls -lh domain-max
+
+# Stage 3: Final runtime image
 FROM alpine:latest
 
-# 安装必要的运行时依赖
-RUN apk --no-cache add ca-certificates wget tzdata && \
-    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-    echo "Asia/Shanghai" > /etc/timezone
+# Install runtime dependencies
+RUN apk --no-cache add \
+    ca-certificates \
+    wget \
+    curl \
+    tzdata \
+    && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && rm -rf /var/cache/apk/*
 
+# Create app directory
 WORKDIR /app
 
-# 从构建阶段复制二进制文件
+# Copy binary from builder stage
 COPY --from=server-builder /app/domain-max .
 
-# 创建非root用户
+# Copy configuration files if they exist
+COPY --from=server-builder /app/configs ./configs
+
+# Create non-root user for security
 RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
+    adduser -u 1001 -S appuser -G appgroup && \
+    chown -R appuser:appgroup /app
 
-# 更改文件所有者
-RUN chown -R appuser:appgroup /app
-
-# 切换到非root用户
+# Switch to non-root user
 USER appuser
 
-# 暴露端口
+# Expose application port
 EXPOSE 8080
 
-# 健康检查
+# Add metadata
+LABEL maintainer="Domain MAX Team" \
+      version="1.0.0" \
+      description="Domain MAX - DNS Management System"
+
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
 
-# 启动应用
+# Start the application
 CMD ["./domain-max"]

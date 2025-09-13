@@ -12,73 +12,119 @@ import (
 )
 
 type Config struct {
-	// 服务器配置
-	Port        string
-	Environment string
-	BaseURL     string // 系统基础URL，用于生成邮件链接
-
+	// 应用配置
+	App struct {
+		Port    string
+		Mode    string // development, production
+		BaseURL string
+	}
+	
 	// 数据库配置
-	DBHost     string
-	DBPort     string
-	DBUser     string
-	DBPassword string
-	DBName     string
-	DBType     string // postgres 或 mysql
-
+	Database struct {
+		Type     string // postgres, mysql
+		Host     string
+		Port     string
+		User     string
+		Password string
+		Name     string
+	}
+	
 	// JWT配置
-	JWTSecret string
-
-	// 加密配置
-	EncryptionKey string // 用于加密敏感数据如SMTP密码
-
+	JWT struct {
+		Secret          string
+		ExpirationHours int
+	}
+	
+	// 安全配置
+	Security struct {
+		EncryptionKey string
+	}
+	
 	// 邮件配置
-	SMTPHost     string
-	SMTPPort     int
-	SMTPUser     string
-	SMTPPassword string
-	SMTPFrom     string
-
-	// DNSPod配置
-	DNSPodToken string
+	SMTP struct {
+		Host     string
+		Port     int
+		User     string
+		Password string
+		From     string
+	}
+	
+	// 兼容性字段（保持向后兼容）
+	Port          string
+	Environment   string
+	BaseURL       string
+	DBHost        string
+	DBPort        string
+	DBUser        string
+	DBPassword    string
+	DBName        string
+	DBType        string
+	JWTSecret     string
+	EncryptionKey string
+	SMTPHost      string
+	SMTPPort      int
+	SMTPUser      string
+	SMTPPassword  string
+	SMTPFrom      string
+	DNSPodToken   string
 }
 
 func Load() *Config {
 	// 尝试加载.env文件
 	godotenv.Load()
 
-	cfg := &Config{
-		Port:        getEnv("PORT", "8080"),
-		Environment: getEnv("ENVIRONMENT", "development"),
-		BaseURL:     getEnv("BASE_URL", ""), // 为空时将自动检测
+	cfg := &Config{}
+	
+	// 新的结构化配置
+	cfg.App.Port = getEnv("PORT", "8080")
+	cfg.App.Mode = getEnv("APP_MODE", "development")
+	cfg.App.BaseURL = getEnv("BASE_URL", "")
+	
+	cfg.Database.Type = getEnv("DB_TYPE", "postgres")
+	cfg.Database.Host = getEnv("DB_HOST", "localhost")
+	cfg.Database.Port = getEnv("DB_PORT", "5432")
+	cfg.Database.User = getEnv("DB_USER", "postgres")
+	cfg.Database.Password = getEnv("DB_PASSWORD", "")
+	cfg.Database.Name = getEnv("DB_NAME", "domain_manager")
+	
+	cfg.JWT.Secret = getEnv("JWT_SECRET", "")
+	cfg.JWT.ExpirationHours = getEnvInt("JWT_EXPIRATION_HOURS", 24)
+	
+	cfg.Security.EncryptionKey = getEnv("ENCRYPTION_KEY", "")
+	
+	cfg.SMTP.Host = getEnv("SMTP_HOST", "smtp.gmail.com")
+	cfg.SMTP.Port = getEnvInt("SMTP_PORT", 587)
+	cfg.SMTP.User = getEnv("SMTP_USER", "")
+	cfg.SMTP.Password = getEnv("SMTP_PASSWORD", "")
+	cfg.SMTP.From = getEnv("SMTP_FROM", "noreply@example.com")
 
-		DBHost:     getEnv("DB_HOST", "localhost"),
-		DBPort:     getEnv("DB_PORT", "5432"),
-		DBUser:     getEnv("DB_USER", "postgres"),
-		DBPassword: getEnv("DB_PASSWORD", ""), // 移除默认密码，强制用户设置
-		DBName:     getEnv("DB_NAME", "domain_manager"),
-		DBType:     getEnv("DB_TYPE", "postgres"),
-
-		JWTSecret: getEnv("JWT_SECRET", ""), // 移除默认JWT密钥，强制用户设置
-
-		EncryptionKey: getEnv("ENCRYPTION_KEY", ""), // 用于加密敏感数据
-
-		SMTPHost:     getEnv("SMTP_HOST", "smtp.gmail.com"),
-		SMTPPort:     getEnvInt("SMTP_PORT", 587),
-		SMTPUser:     getEnv("SMTP_USER", ""),
-		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
-		SMTPFrom:     getEnv("SMTP_FROM", "noreply@example.com"),
-
-		DNSPodToken: getEnv("DNSPOD_TOKEN", ""),
-	}
+	// 兼容性字段映射
+	cfg.Port = cfg.App.Port
+	cfg.Environment = cfg.App.Mode
+	cfg.BaseURL = cfg.App.BaseURL
+	cfg.DBHost = cfg.Database.Host
+	cfg.DBPort = cfg.Database.Port
+	cfg.DBUser = cfg.Database.User
+	cfg.DBPassword = cfg.Database.Password
+	cfg.DBName = cfg.Database.Name
+	cfg.DBType = cfg.Database.Type
+	cfg.JWTSecret = cfg.JWT.Secret
+	cfg.EncryptionKey = cfg.Security.EncryptionKey
+	cfg.SMTPHost = cfg.SMTP.Host
+	cfg.SMTPPort = cfg.SMTP.Port
+	cfg.SMTPUser = cfg.SMTP.User
+	cfg.SMTPPassword = cfg.SMTP.Password
+	cfg.SMTPFrom = cfg.SMTP.From
+	cfg.DNSPodToken = getEnv("DNSPOD_TOKEN", "")
 
 	// 如果没有设置BASE_URL，根据环境和端口自动生成
-	if cfg.BaseURL == "" {
-		if cfg.Environment == "development" {
-			cfg.BaseURL = fmt.Sprintf("http://localhost:%s", cfg.Port)
+	if cfg.App.BaseURL == "" {
+		if cfg.App.Mode == "development" {
+			cfg.App.BaseURL = fmt.Sprintf("http://localhost:%s", cfg.App.Port)
 		} else {
-			// 生产环境默认使用HTTPS，域名需要用户配置
-			cfg.BaseURL = fmt.Sprintf("https://localhost:%s", cfg.Port)
+			cfg.App.BaseURL = fmt.Sprintf("https://localhost:%s", cfg.App.Port)
 		}
+		cfg.BaseURL = cfg.App.BaseURL
 	}
 
 	// 验证必要的配置项

@@ -12,16 +12,18 @@ import (
 // User 用户模型
 type User struct {
 	ID             uint           `json:"id" gorm:"primaryKey"`
+	Username       string         `json:"username" gorm:"uniqueIndex;not null;size:100"` // 用户名
 	Email          string         `json:"email" gorm:"uniqueIndex;not null;size:255"`
 	Password       string         `json:"-" gorm:"not null;size:255"` // bcrypt哈希后的密码
 	Nickname       string         `json:"nickname" gorm:"size:100"`   // 用户昵称
 	Avatar         string         `json:"avatar" gorm:"size:500"`     // 头像URL
-	IsActive       bool           `json:"is_active" gorm:"default:false;index"`
+	Role           string         `json:"role" gorm:"default:user;size:20;index"` // 用户角色：user, admin
+	Status         string         `json:"status" gorm:"default:active;size:20"` // 用户状态：active, suspended, banned
+	IsActive       bool           `json:"is_active" gorm:"default:true;index"`
 	IsAdmin        bool           `json:"is_admin" gorm:"default:false;index"`
 	LastLoginAt    *time.Time     `json:"last_login_at"`                        // 最后登录时间
 	LoginCount     int            `json:"login_count" gorm:"default:0"`         // 登录次数
 	DNSRecordQuota int            `json:"dns_record_quota" gorm:"default:10"`   // DNS记录配额
-	Status         string         `json:"status" gorm:"default:normal;size:20"` // 用户状态：normal, suspended, banned
 	CreatedAt      time.Time      `json:"created_at" gorm:"index"`
 	UpdatedAt      time.Time      `json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
@@ -51,6 +53,7 @@ type PasswordReset struct {
 
 // RegisterRequest 用户注册请求
 type RegisterRequest struct {
+	Username        string `json:"username" binding:"required,min=3,max=50"`
 	Email           string `json:"email" binding:"required,email,max=255"`
 	Password        string `json:"password" binding:"required,min=8,max=100"`
 	ConfirmPassword string `json:"confirm_password" binding:"required"`
