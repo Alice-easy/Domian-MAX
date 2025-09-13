@@ -73,6 +73,7 @@ WORKDIR /app
 
 # Copy binary from builder stage
 COPY --from=server-builder /app/domain-max .
+COPY --from=server-builder /app/web/dist ./web/dist
 
 # Copy configuration files if they exist
 COPY --from=server-builder /app/configs ./configs
@@ -97,5 +98,10 @@ LABEL maintainer="Domain MAX Team" \
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
 
+<<<<<<< HEAD
 # Start the application
 CMD ["./domain-max"]
+=======
+# 启动应用
+CMD ["./domain-max"]
+>>>>>>> 2c9f9981e8704ab02eee3aa85091a742a44e67f9
