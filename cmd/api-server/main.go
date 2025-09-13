@@ -9,8 +9,6 @@ import (
 	"domain-max/pkg/utils"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -20,7 +18,7 @@ func main() {
 	// 加载配置
 	cfg := config.Load()
 
-	// 连接数据库
+	// 连接数据库（支持远程数据库）
 	var db *gorm.DB
 	var err error
 	
@@ -61,49 +59,19 @@ func main() {
 
 	router := gin.Default()
 
-	// 添加中间件
-	router.Use(middleware.CORSMiddleware())
+	// 添加增强的CORS中间件（支持Cloudflare Pages）
+	router.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+		AllowedOrigins: cfg.AllowedOrigins, // 从配置文件读取
+		IsDevelopment:  cfg.Environment == "development",
+	}))
 	router.Use(middleware.RateLimitMiddleware())
 
-	// API路由
+	// 仅提供API服务，不服务前端文件
 	setupAPIRoutes(router, authAPI, dnsAPI, jwtService)
 
-	// 前端静态文件服务
-	setupWebRoutes(router)
-
-	log.Printf("服务器启动在端口 %s", cfg.Port)
+	log.Printf("API服务器启动在端口 %s", cfg.Port)
+	log.Printf("允许的来源: %v", cfg.AllowedOrigins)
 	log.Fatal(router.Run(":" + cfg.Port))
-}
-
-func setupWebRoutes(router *gin.Engine) {
-	// 检查web/dist目录是否存在
-	webDistPath := "web/dist"
-	if _, err := os.Stat(webDistPath); os.IsNotExist(err) {
-		log.Printf("警告: web/dist 目录不存在，跳过静态文件服务")
-		return
-	}
-
-	// 静态文件服务 - 处理构建后的静态资源
-	router.Static("/static", filepath.Join(webDistPath, "static"))
-
-	// 处理所有其他路由，返回index.html (用于React Router)
-	router.NoRoute(func(c *gin.Context) {
-		// 如果是API请求，返回404
-		if len(c.Request.URL.Path) > 4 && c.Request.URL.Path[:4] == "/api" {
-			c.JSON(404, gin.H{"error": "API endpoint not found"})
-			return
-		}
-
-		// 尝试读取index.html
-		indexPath := filepath.Join(webDistPath, "index.html")
-		indexHTML, err := os.ReadFile(indexPath)
-		if err != nil {
-			c.String(500, "无法加载前端页面")
-			return
-		}
-
-		c.Data(200, "text/html; charset=utf-8", indexHTML)
-	})
 }
 
 func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, dnsAPI *api.SimpleDNSAPI, jwtService *utils.JWTService) {
@@ -111,8 +79,19 @@ func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, dnsAPI *api.Simple
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
-			"message": "服务运行正常",
+			"message": "API服务运行正常",
 			"version": "1.0.0",
+			"mode":    "api-only",
+		})
+	})
+
+	// 根路径提示
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Domain MAX API Server",
+			"version": "1.0.0",
+			"docs":    "/api/v1/docs",
+			"health":  "/health",
 		})
 	})
 

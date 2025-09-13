@@ -1,11 +1,36 @@
-# Domain MAX - 二级域名分发管理系统
+# Domain MAX - 域名管理系统
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Architecture](https://img.shields.io/badge/architecture-frontend%2Fbackend%20separated-brightgreen.svg)
 ![Go Version](https://img.shields.io/badge/go-1.23+-blue.svg)
 ![React Version](https://img.shields.io/badge/react-18+-blue.svg)
+![Cloudflare](https://img.shields.io/badge/frontend-Cloudflare%20Pages-orange.svg)
+![VPS](https://img.shields.io/badge/backend-VPS%20API-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-一个现代化的二级域名分发管理系统，支持多 DNS 提供商，提供完整的域名管理、DNS 记录管理和用户权限控制功能。
+现代化的域名与 DNS 管理系统，采用**前后端分离架构**，前端部署在 Cloudflare Pages，后端 API 部署在 VPS，支持多种云数据库。
+
+## 🏗️ 系统架构
+
+```
+┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+│   Cloudflare Pages  │    │     Your VPS        │    │   Remote Database   │
+│   (前端 React SPA)   │    │   (后端 Go API)      │    │  (PostgreSQL/MySQL) │
+├─────────────────────┤    ├─────────────────────┤    ├─────────────────────┤
+│ • Global CDN        │    │ • RESTful API       │    │ • PlanetScale       │
+│ • Static Assets     │───▶│ • JWT Auth          │───▶│ • Supabase          │
+│ • React Router      │    │ • DNS Management    │    │ • AWS RDS           │
+│ • Auto HTTPS        │    │ • CORS Enabled      │    │ • 自建 PostgreSQL    │
+└─────────────────────┘    └─────────────────────┘    └─────────────────────┘
+```
+
+### 🌟 架构优势
+
+- **🚀 全球加速**: 前端通过 Cloudflare CDN 全球加速访问
+- **💰 成本优化**: 前端免费托管，后端 VPS 成本可控
+- **🛡️ 高可用性**: 分离部署降低单点故障风险
+- **⚡ 高性能**: 静态资源 CDN 缓存，API 服务独立优化
+- **🔧 易维护**: 前后端独立开发、部署和扩展
 
 ## ✨ 核心功能
 
@@ -50,84 +75,186 @@
 
 ## 🚀 快速开始
 
-### 系统要求
+### 🛠️ 开发环境
 
-- **Go 1.23+** - 后端开发环境
-- **Node.js 18+** - 前端开发环境
-- **PostgreSQL 14+** - 数据库服务
-- **Redis 7+** - 缓存服务（可选）
-- **内存** 2GB+
-- **磁盘空间** 2GB+
+#### 系统要求
 
-### 环境准备
+- **Go 1.23+** - 后端 API 开发
+- **Node.js 18+** - 前端开发
+- **远程数据库** - PlanetScale/Supabase/AWS RDS 等
 
-#### 1. 安装依赖软件
-
-**Ubuntu/Debian:**
+#### 快速启动开发环境
 
 ```bash
-# 安装 Go
-wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
-export PATH=$PATH:/usr/local/go/bin
+# 1. 克隆项目
+git clone https://github.com/your-username/domain-max.git
+cd domain-max
 
-# 安装 Node.js
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs
+# 2. 安装所有依赖
+./dev.sh install
 
-# 安装 PostgreSQL
-sudo apt-get install postgresql postgresql-contrib
-
-# 安装 Redis（可选）
-sudo apt-get install redis-server
-```
-
-**macOS:**
-
-```bash
-# 使用 Homebrew 安装
-brew install go node postgresql redis
-```
-
-**Windows:**
-
-```bash
-# 使用 Scoop 安装（推荐）
-scoop install go nodejs postgresql redis
-
-# 或下载官方安装包
-# Go: https://golang.org/dl/
-# Node.js: https://nodejs.org/
-# PostgreSQL: https://www.postgresql.org/download/
-```
-
-#### 2. 配置数据库
-
-```bash
-# 启动 PostgreSQL 服务
-sudo systemctl start postgresql  # Linux
-brew services start postgresql   # macOS
-# Windows: 通过服务管理器启动
-
-# 创建数据库用户和数据库
-sudo -u postgres psql
-CREATE USER domain_user WITH PASSWORD 'your_password';
-CREATE DATABASE domain_manager OWNER domain_user;
-GRANT ALL PRIVILEGES ON DATABASE domain_manager TO domain_user;
-\q
-```
-
-#### 3. 配置环境变量
-
-```bash
-# 复制环境配置文件
+# 3. 配置环境变量
 cp .env.example .env
+# 编辑 .env 设置数据库连接等
 
-# 编辑环境配置
-vi .env
+# 4. 启动开发环境（前后端同时启动）
+./dev.sh start
 ```
 
-必须配置的环境变量：
+开发环境启动后：
+
+- **前端**: http://localhost:5173
+- **后端 API**: http://localhost:8080
+- **API 文档**: http://localhost:8080/health
+
+#### 分别启动前后端
+
+```bash
+# 仅启动后端API
+./dev.sh backend
+
+# 仅启动前端
+./dev.sh frontend
+
+# 构建API服务
+./build-api.sh build
+
+# 开发模式运行API
+./build-api.sh dev
+```
+
+### 🚀 生产部署
+
+采用前后端分离架构，分别部署到不同平台：
+
+#### 部署架构选择
+
+| 组件         | 推荐平台             | 特点                     |
+| ------------ | -------------------- | ------------------------ |
+| **前端**     | Cloudflare Pages     | 全球 CDN、免费、自动构建 |
+| **后端 API** | VPS (Ubuntu)         | 完全控制、成本可控       |
+| **数据库**   | PlanetScale/Supabase | 托管服务、高可用         |
+
+#### 🌐 前端部署 (Cloudflare Pages)
+
+1. **连接 GitHub 仓库**
+
+   - 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+   - Pages → Create project → Connect Git
+
+2. **配置构建设置**
+
+   ```yaml
+   Build command: cd web && npm ci && npm run build
+   Build output directory: web/dist
+   Environment variables:
+     NODE_ENV: production
+     VITE_API_BASE_URL: https://api.yourdomain.com
+     VITE_BACKEND_DOMAIN: api.yourdomain.com
+   ```
+
+3. **自定义域名（可选）**
+   - Pages Settings → Custom domains
+   - 添加你的域名
+
+#### 🖥️ 后端部署 (VPS)
+
+1. **VPS 环境准备**
+
+   ```bash
+   # 连接VPS
+   ssh user@your-vps-ip
+
+   # 安装依赖
+   sudo apt update && sudo apt upgrade -y
+   sudo apt install -y git nginx certbot python3-certbot-nginx
+
+   # 安装Go
+   wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
+   sudo tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+   echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+   source ~/.bashrc
+   ```
+
+2. **部署 API 服务**
+
+   ```bash
+   # 克隆项目
+   git clone https://github.com/your-username/domain-max.git
+   cd domain-max
+
+   # 配置环境变量
+   cp .env.vps .env
+   nano .env  # 编辑配置
+
+   # 构建API
+   ./build-api.sh cross
+
+   # 配置系统服务
+   sudo cp domain-max-api-linux /usr/local/bin/domain-max-api
+   sudo chmod +x /usr/local/bin/domain-max-api
+   ```
+
+3. **配置 Nginx 和 SSL**
+
+   ```bash
+   # 配置Nginx反向代理
+   sudo nano /etc/nginx/sites-available/domain-max-api
+
+   # 启用配置
+   sudo ln -s /etc/nginx/sites-available/domain-max-api /etc/nginx/sites-enabled/
+   sudo nginx -t
+   sudo systemctl reload nginx
+
+   # 配置SSL证书
+   sudo certbot --nginx -d api.yourdomain.com
+   ```
+
+#### 🗄️ 数据库设置
+
+**选择 1: PlanetScale (推荐)**
+
+```bash
+# 1. 注册 https://planetscale.com/
+# 2. 创建数据库
+# 3. 获取连接信息，配置环境变量：
+DB_TYPE=mysql
+DB_HOST=your-db.planetscale.com
+DB_PORT=3306
+DB_SSL_MODE=require
+```
+
+**选择 2: Supabase**
+
+```bash
+# 1. 注册 https://supabase.com/
+# 2. 创建项目
+# 3. 配置环境变量：
+DB_TYPE=postgres
+DB_HOST=db.your-project.supabase.co
+DB_PORT=5432
+DB_SSL_MODE=require
+```
+
+### 📖 详细部署指南
+
+- **[前后端分离完整部署](docs/separation-deployment.md)** - 完整的分离架构部署指南
+- **[后端 API 部署](docs/deployment.md)** - VPS 上的 API 服务部署
+
+### 🔧 开发工具
+
+```bash
+# 开发环境管理
+./dev.sh start     # 启动完整开发环境
+./dev.sh stop      # 停止开发服务
+./dev.sh status    # 查看服务状态
+
+# API构建工具
+./build-api.sh build    # 构建API服务
+./build-api.sh cross    # 构建跨平台版本
+./build-api.sh dev      # 开发模式运行
+./build-api.sh clean    # 清理构建产物
+```
 
 ```env
 # 数据库配置
@@ -192,28 +319,29 @@ nohup ./domain-max > app.log 2>&1 &
 - **API 接口**: http://localhost:8080/api
 - **健康检查**: http://localhost:8080/api/health
 
-## 📋 系统架构
+## 📋 前后端分离架构
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   React 前端    │    │   Go 后端 API   │    │  PostgreSQL DB  │
-│   TypeScript    ├────┤   RESTful API   ├────┤   数据存储      │
-│   响应式设计    │    │   JWT 认证      │    │   ACID 事务     │
+│ Cloudflare Pages│    │   VPS Go API    │    │  Remote Database│
+│   React SPA     ├────┤   RESTful API   ├────┤  PlanetScale    │
+│   全球 CDN      │    │   CORS 支持     │    │  Supabase      │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │                       │
          │              ┌─────────────────┐              │
-         │              │   Redis 缓存    │              │
-         └──────────────┤   会话存储      ├──────────────┘
-                        │   频率限制      │
+         │              │   Nginx Proxy   │              │
+         └──────────────┤   SSL 证书      ├──────────────┘
+                        │   负载均衡      │
                         └─────────────────┘
 ```
 
 ### 服务架构
 
-- **前端服务** - React 应用已构建并内嵌到 Go 二进制文件中
-- **后端服务** - Go 单体应用，内置静态文件服务
-- **数据库** - PostgreSQL 独立部署
-- **缓存** - Redis 独立部署（可选）
+- **前端服务** - React SPA 部署在 Cloudflare Pages，全球 CDN 加速
+- **后端服务** - Go API 服务器部署在 VPS，支持 CORS 跨域
+- **数据库** - 远程数据库服务（PlanetScale MySQL、Supabase PostgreSQL 等）
+- **代理服务** - Nginx 反向代理，提供 SSL 支持和负载均衡
+- **域名解析** - Cloudflare DNS 管理，支持多级域名分发
 
 ## 🛠️ 技术栈
 
@@ -238,101 +366,95 @@ nohup ./domain-max > app.log 2>&1 &
 
 ### 基础设施
 
-- **内嵌静态服务** - Go 应用内置前端静态文件服务
-- **PostgreSQL** - 关系型数据库
-- **Redis** - 缓存和会话存储（可选）
+- **Cloudflare Pages** - 全球 CDN 静态网站托管
+- **VPS 服务器** - API 服务部署
+- **Nginx** - 反向代理和负载均衡
+- **Let's Encrypt** - 免费 SSL 证书
+- **远程数据库** - 托管数据库服务
 
 ## 📖 详细文档
 
-- 📚 [文档中心](docs/) - 完整的项目文档导航
-- 🚀 [部署指南](docs/deployment.md) - 完整的部署步骤和配置
-- 🏭 [生产环境指南](docs/production-guide.md) - 生产环境优化和安全配置
-- 🏗️ [系统架构](docs/architecture.md) - 详细的系统设计文档
+- 📚 [部署指南](docs/deployment.md) - 前后端分离部署步骤和配置
+- ️ [系统架构](docs/architecture.md) - 详细的系统设计文档
 
 ## 🔧 开发指南
 
-### 本地开发环境
+### 快速启动开发环境
+
+使用我们提供的开发脚本一键启动：
 
 ```bash
-# 1. 安装依赖
-make install
+# 一键启动前后端开发环境
+./dev.sh
 
-# 2. 启动开发环境（分离模式）
-# 终端1: 启动后端开发服务器
-make dev
+# 或者手动分别启动
+# 终端1: 启动后端API服务器
+cd domain-max && go run cmd/api-server/main.go
 
-# 终端2: 启动前端开发服务器（热重载）
-make dev-web
+# 终端2: 启动前端开发服务器
+cd web && npm run dev
 ```
 
-### 构建和测试
+### 构建部署
 
 ```bash
-# 构建项目
-make build
+# 构建后端API
+./build-api.sh
 
-# 运行测试
-make test
+# 构建前端SPA
+cd web && npm run build
 
-# 代码检查
-make lint
-
-# 生成测试覆盖率报告
-make test-coverage
+# 部署到VPS
+# 1. 上传后端二进制文件到VPS
+# 2. 前端构建产物推送到Cloudflare Pages
+# 3. 配置Nginx反向代理
 ```
 
 ## 🏥 运维管理
 
-### 服务管理
+### VPS 服务器管理
 
 ```bash
-# 启动应用
-./domain-max
+# 使用systemd管理API服务
+sudo systemctl start domain-max-api
+sudo systemctl stop domain-max-api
+sudo systemctl restart domain-max-api
+sudo systemctl status domain-max-api
 
-# 后台运行
-nohup ./domain-max > app.log 2>&1 &
+# 查看服务日志
+sudo journalctl -u domain-max-api -f
 
-# 停止应用（查找进程ID）
-ps aux | grep domain-max
-kill <PID>
-
-# 或使用脚本管理
-# 创建服务脚本 /etc/systemd/system/domain-max.service
-sudo systemctl start domain-max
-sudo systemctl stop domain-max
-sudo systemctl restart domain-max
+# 手动启动（调试模式）
+./domain-max-api
 ```
 
 ### 健康检查
 
 ```bash
-# 应用健康检查
-curl http://localhost:8080/api/health
+# API健康检查
+curl https://your-api-domain.com/api/health
 
-# 检查进程状态
-ps aux | grep domain-max
+# 前端访问检查
+curl https://your-frontend-domain.com
+
+# 检查服务状态
+sudo systemctl status domain-max-api
 
 # 检查端口占用
-netstat -tlnp | grep :8080
-
-# 检查日志
-tail -f app.log
+sudo netstat -tlnp | grep :8080
 ```
 
-### 数据库管理
+### 远程数据库管理
 
 ```bash
-# 连接数据库
-psql -h localhost -U domain_user -d domain_manager
+# PlanetScale连接示例
+# 使用提供的连接字符串连接数据库
 
-# 备份数据库
-pg_dump -h localhost -U domain_user domain_manager > backup.sql
+# Supabase连接示例
+# 通过Web界面或SQL编辑器管理数据库
 
-# 恢复数据库
-psql -h localhost -U domain_user domain_manager < backup.sql
-
-# 数据库迁移
-make db-migrate
+# 本地数据库迁移测试
+go run cmd/migrate/main.go
 ```
 
 ## 🔒 安全特性
@@ -387,75 +509,119 @@ make db-migrate
 
 #### 应用无法启动
 
+````bash
+# 检查端口占用
+## 🛠️ 故障排除
+
+### 常见问题
+
+#### 前端无法连接后端API
+
+```bash
+# 检查CORS配置
+curl -v -H "Origin: https://your-frontend.pages.dev" \
+  https://your-api-domain.com/api/health
+
+# 检查环境变量
+grep -E "^(VITE_|REACT_)" web/.env
+
+# 验证API地址配置
+cat web/.env | grep VITE_API_URL
+````
+
+#### VPS 部署 API 服务启动失败
+
 ```bash
 # 检查端口占用
-netstat -tlnp | grep :8080
-lsof -i :8080
+sudo netstat -tlnp | grep :8080
+sudo lsof -i :8080
 
-# 检查配置文件
-cat .env
+# 检查服务日志
+sudo journalctl -u domain-max-api -f
 
-# 检查日志
-tail -f app.log
+# 检查环境变量文件
+cat .env.vps
 
-# 检查权限
-ls -la domain-max
-chmod +x domain-max
+# 检查文件权限
+ls -la domain-max-api
+chmod +x domain-max-api
 ```
 
 #### 数据库连接失败
 
 ```bash
-# 检查数据库服务状态
-sudo systemctl status postgresql  # Linux
-brew services list | grep postgresql  # macOS
+# 测试PlanetScale连接
+mysql -h your-host -P 3306 -u your-user -p your-database
 
-# 测试数据库连接
-psql -h localhost -U domain_user -d domain_manager
+# 测试Supabase连接
+psql "postgresql://user:pass@host:port/dbname?sslmode=require"
 
 # 检查数据库配置
-grep -E "^(DB_|POSTGRES_)" .env
+grep -E "^(DB_|DATABASE_)" .env.vps
 
-# 重启数据库服务
-sudo systemctl restart postgresql
+# 验证网络连接
+ping your-database-host
+telnet your-database-host 3306
 ```
 
-#### 前端页面无法访问
+#### Cloudflare Pages 构建失败
 
 ```bash
-# 检查静态文件是否存在
-ls -la web/dist/
-
-# 重新构建前端
+# 本地测试构建
 cd web && npm run build
 
-# 检查服务器路由配置
-curl -v http://localhost:8080/
+# 检查构建配置
+cat web/package.json | grep scripts -A 10
+
+# 验证环境变量
+# 在Cloudflare Pages设置中检查环境变量配置
+
+# 检查依赖版本
+npm ls
 ```
 
-### 性能问题诊断
+### 性能优化
 
 ```bash
-# 检查系统资源
-top
-htop
-free -h
-df -h
+# 前端性能分析
+cd web && npm run build -- --analyze
 
-# 检查应用性能
-# 安装 pprof
-go tool pprof http://localhost:8080/debug/pprof/profile
+# API性能监控
+# 配置适当的监控和日志记录
 
-# 数据库性能分析
-psql -U domain_user -d domain_manager -c "
-SELECT query, calls, total_time, mean_time
-FROM pg_stat_statements
-ORDER BY total_time DESC
-LIMIT 10;"
+# 数据库查询优化
+# 使用数据库提供商的性能监控工具
 
-# 检查网络延迟
-curl -w "%{time_total}" -o /dev/null -s http://localhost:8080/api/health
+# CDN缓存验证
+curl -I https://your-frontend.pages.dev/
+# 检查Cache-Control和CF-Cache-Status头
 ```
+
+## 🌐 部署架构优势
+
+### Cloudflare Pages 优势
+
+- ✅ 全球 CDN 加速，访问速度快
+- ✅ 自动 HTTPS 和 SSL 证书
+- ✅ Git 集成，自动构建部署
+- ✅ 免费额度充足
+- ✅ 高可用性和容错能力
+
+### VPS API 服务优势
+
+- ✅ 完全控制服务器环境
+- ✅ 成本可控，性能可预测
+- ✅ 支持复杂业务逻辑
+- ✅ 易于监控和调试
+- ✅ 数据安全可控
+
+### 远程数据库优势
+
+- ✅ 专业数据库管理
+- ✅ 自动备份和恢复
+- ✅ 高可用性保障
+- ✅ 按需扩展
+- ✅ 安全防护完善
 
 ## 🤝 贡献指南
 
@@ -470,7 +636,8 @@ curl -w "%{time_total}" -o /dev/null -s http://localhost:8080/api/health
 ### 开发规范
 
 - 遵循 Go 代码规范
-- 编写单元测试
+- 前端使用 TypeScript 和 React 最佳实践
+- 编写单元测试和集成测试
 - 更新相关文档
 - 确保所有测试通过
 
@@ -480,16 +647,20 @@ curl -w "%{time_total}" -o /dev/null -s http://localhost:8080/api/health
 
 ## 🆘 获取帮助
 
-- 📖 查看 [文档](docs/)
-- 🐛 报告 [Issues](https://github.com/your-repo/domain-max/issues)
-- 💬 加入 [讨论](https://github.com/your-repo/domain-max/discussions)
-- 📧 邮件联系: support@domain-max.com
+- 📖 查看项目文档
+- 🐛 报告问题和 Bug
+- 💬 参与社区讨论
+- 📧 技术支持咨询
 
 ## 🙏 致谢
 
 感谢所有为本项目做出贡献的开发者和社区成员！
 
 ---
+
+**Domain MAX** 致力于为用户提供最佳的域名管理体验，采用现代化的前后端分离架构，结合 Cloudflare 全球 CDN 和 VPS 部署，实现高性能、高可用、低成本的域名管理解决方案。
+
+_Built with ❤️ by Domain MAX Team_
 
 **Domain MAX** - 让域名管理更简单、更安全、更高效！
 

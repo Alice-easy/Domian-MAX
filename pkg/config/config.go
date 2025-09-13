@@ -27,6 +27,7 @@ type Config struct {
 		User     string
 		Password string
 		Name     string
+		SSLMode  string // SSL模式：require, disable, prefer等
 	}
 	
 	// JWT配置
@@ -40,6 +41,12 @@ type Config struct {
 		EncryptionKey string
 	}
 	
+	// CORS配置（前后端分离重要）
+	CORS struct {
+		AllowedOrigins []string
+		IsDevelopment  bool
+	}
+	
 	// 邮件配置
 	SMTP struct {
 		Host     string
@@ -50,23 +57,25 @@ type Config struct {
 	}
 	
 	// 兼容性字段（保持向后兼容）
-	Port          string
-	Environment   string
-	BaseURL       string
-	DBHost        string
-	DBPort        string
-	DBUser        string
-	DBPassword    string
-	DBName        string
-	DBType        string
-	JWTSecret     string
-	EncryptionKey string
-	SMTPHost      string
-	SMTPPort      int
-	SMTPUser      string
-	SMTPPassword  string
-	SMTPFrom      string
-	DNSPodToken   string
+	Port           string
+	Environment    string
+	BaseURL        string
+	DBHost         string
+	DBPort         string
+	DBUser         string
+	DBPassword     string
+	DBName         string
+	DBType         string
+	DBSSLMode      string
+	AllowedOrigins []string
+	JWTSecret      string
+	EncryptionKey  string
+	SMTPHost       string
+	SMTPPort       int
+	SMTPUser       string
+	SMTPPassword   string
+	SMTPFrom       string
+	DNSPodToken    string
 }
 
 func Load() *Config {
@@ -86,6 +95,33 @@ func Load() *Config {
 	cfg.Database.User = getEnv("DB_USER", "postgres")
 	cfg.Database.Password = getEnv("DB_PASSWORD", "")
 	cfg.Database.Name = getEnv("DB_NAME", "domain_manager")
+	cfg.Database.SSLMode = getEnv("DB_SSL_MODE", "prefer")
+	
+	cfg.JWT.Secret = getEnv("JWT_SECRET", "")
+	cfg.JWT.ExpirationHours = getEnvInt("JWT_EXPIRATION_HOURS", 24)
+	
+	cfg.Security.EncryptionKey = getEnv("ENCRYPTION_KEY", "")
+	
+	// CORS配置 - 支持前后端分离
+	allowedOriginsStr := getEnv("CORS_ALLOWED_ORIGINS", "")
+	if allowedOriginsStr != "" {
+		cfg.CORS.AllowedOrigins = strings.Split(allowedOriginsStr, ",")
+		// 去除空格
+		for i, origin := range cfg.CORS.AllowedOrigins {
+			cfg.CORS.AllowedOrigins[i] = strings.TrimSpace(origin)
+		}
+	} else {
+		// 默认配置
+		if cfg.App.Mode == "development" {
+			cfg.CORS.AllowedOrigins = []string{
+				"http://localhost:3000",
+				"http://localhost:5173",
+				"http://127.0.0.1:3000",
+				"http://127.0.0.1:5173",
+			}
+		}
+	}
+	cfg.CORS.IsDevelopment = cfg.App.Mode == "development"
 	
 	cfg.JWT.Secret = getEnv("JWT_SECRET", "")
 	cfg.JWT.ExpirationHours = getEnvInt("JWT_EXPIRATION_HOURS", 24)
@@ -108,6 +144,8 @@ func Load() *Config {
 	cfg.DBPassword = cfg.Database.Password
 	cfg.DBName = cfg.Database.Name
 	cfg.DBType = cfg.Database.Type
+	cfg.DBSSLMode = cfg.Database.SSLMode
+	cfg.AllowedOrigins = cfg.CORS.AllowedOrigins
 	cfg.JWTSecret = cfg.JWT.Secret
 	cfg.EncryptionKey = cfg.Security.EncryptionKey
 	cfg.SMTPHost = cfg.SMTP.Host

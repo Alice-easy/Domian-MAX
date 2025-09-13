@@ -17,6 +17,7 @@ export default defineConfig({
     assetsDir: 'static',
     sourcemap: false,
     minify: 'terser',
+    target: 'es2015', // Cloudflare Pages兼容性
     rollupOptions: {
       output: {
         manualChunks: {
@@ -31,9 +32,14 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: process.env.VITE_API_BASE_URL || 'http://localhost:8080',
         changeOrigin: true,
+        secure: false,
       }
     }
+  },
+  // Cloudflare Pages 优化
+  define: {
+    global: 'globalThis',
   }
 })
