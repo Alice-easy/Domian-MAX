@@ -22,12 +22,13 @@ import {
   ReloadOutlined,
   SettingOutlined
 } from '@ant-design/icons'
-import { useAuthStore } from '@/stores/auth-store'
-import { useDNSStore } from '@/stores/dns-store'
+import { useAuthStore } from '@/stores/authStore'
+import { useDNSStore } from '@/stores/dnsStore'
 import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import 'dayjs/locale/zh-cn'
+import { getDNSRecordTypeColor } from '@/config/constants'
 
 // 配置 dayjs
 dayjs.extend(relativeTime)
@@ -151,15 +152,7 @@ export default function Dashboard() {
   ]
 
   const getRecordTypeColor = (type: string) => {
-    const colors: { [key: string]: string } = {
-      'A': 'blue',
-      'AAAA': 'purple',
-      'CNAME': 'orange',
-      'MX': 'green',
-      'TXT': 'red',
-      'NS': 'cyan'
-    }
-    return colors[type] || 'default'
+    return getDNSRecordTypeColor(type)
   }
 
   const refreshData = () => {

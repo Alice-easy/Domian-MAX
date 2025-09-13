@@ -1,13 +1,16 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios'
 import { message } from 'antd'
+import { ENV_CONFIG, API_CONFIG } from '@/config/env'
+import { APP_CONFIG } from '@/config/constants'
 
 // API 基础配置
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api'
+const API_BASE_URL = `${ENV_CONFIG.API_BASE_URL}/api`
 
 // 创建 axios 实例
 const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: API_CONFIG.timeout,
+  withCredentials: API_CONFIG.withCredentials,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -16,7 +19,7 @@ const api: AxiosInstance = axios.create({
 // 请求拦截器
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('auth_token')
+    const token = localStorage.getItem(APP_CONFIG.STORAGE_KEYS.AUTH_TOKEN)
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -38,8 +41,9 @@ api.interceptors.response.use(
     if (response) {
       switch (response.status) {
         case 401:
-          localStorage.removeItem('auth_token')
-          localStorage.removeItem('user_info')
+          localStorage.removeItem(APP_CONFIG.STORAGE_KEYS.AUTH_TOKEN)
+          localStorage.removeItem(APP_CONFIG.STORAGE_KEYS.REFRESH_TOKEN)
+          localStorage.removeItem(APP_CONFIG.STORAGE_KEYS.USER_INFO)
           window.location.href = '/login'
           message.error('认证已过期，请重新登录')
           break

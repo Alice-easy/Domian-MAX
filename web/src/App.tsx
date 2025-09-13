@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { useAuthStore } from '@/stores/auth-store'
-import Layout from '@/components/layout'
-import ProtectedRoute from '@/components/protected-route'
+import { useAuthStore } from '@/stores/authStore'
+import UserLayout from '@/components/userLayout'
+import ProtectedRoute from '@/components/protectedRoute'
 import Login from '@/pages/login'
 import Register from '@/pages/register'
 import ResetPassword from '@/pages/reset-password'
@@ -9,7 +9,7 @@ import ForgotPassword from '@/pages/forgot-password'
 import Dashboard from '@/pages/dashboard'
 import DNSRecords from '@/pages/dns-records'
 import Profile from '@/pages/profile'
-import AdminLayout from '@/components/admin-layout'
+import AdminLayout from '@/components/adminLayout'
 import AdminDashboard from '@/pages/admin/dashboard'
 import AdminUsers from '@/pages/admin/users'
 import AdminDomains from '@/pages/admin/domains'
@@ -53,7 +53,7 @@ function App() {
       {/* 用户路由 */}
       <Route path="/" element={
         <ProtectedRoute>
-          <Layout />
+          <UserLayout />
         </ProtectedRoute>
       }>
         <Route index element={<Dashboard />} />

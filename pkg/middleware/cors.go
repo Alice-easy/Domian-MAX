@@ -13,23 +13,6 @@ type CORSConfig struct {
 	IsDevelopment  bool
 }
 
-// CORSMiddleware 简单的CORS中间件
-func CORSMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, Accept")
-		c.Header("Access-Control-Allow-Credentials", "true")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-
-		c.Next()
-	}
-}
-
 // CORSWithConfig 带配置的CORS中间件
 func CORSWithConfig(config CORSConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -46,7 +29,7 @@ func CORSWithConfig(config CORSConfig) gin.HandlerFunc {
 		
 		// 检查配置的允许来源
 		for _, allowedOrigin := range config.AllowedOrigins {
-			if origin == allowedOrigin {
+			if allowedOrigin == "*" || allowedOrigin == origin {
 				allowed = true
 				break
 			}
@@ -56,11 +39,12 @@ func CORSWithConfig(config CORSConfig) gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 		}
 		
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 		
+		// 处理预检请求
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
@@ -68,4 +52,12 @@ func CORSWithConfig(config CORSConfig) gin.HandlerFunc {
 		
 		c.Next()
 	}
+}
+
+// DefaultCORS 默认CORS中间件
+func DefaultCORS() gin.HandlerFunc {
+	return CORSWithConfig(CORSConfig{
+		AllowedOrigins: []string{"*"},
+		IsDevelopment:  true,
+	})
 }

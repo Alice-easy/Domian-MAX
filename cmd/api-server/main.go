@@ -4,29 +4,20 @@ import (
 	"domain-max/pkg/api"
 	"domain-max/pkg/config"
 	"domain-max/pkg/database"
-	"domain-max/pkg/dns/providers"
 	"domain-max/pkg/middleware"
 	"domain-max/pkg/utils"
 	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 func main() {
 	// 加载配置
 	cfg := config.Load()
 
-	// 连接数据库（支持远程数据库）
-	var db *gorm.DB
-	var err error
-	
-	if cfg.Environment == "development" {
-		log.Println("开发环境：连接数据库")
-	}
-	
-	db, err = database.Connect(cfg)
+	// 连接数据库
+	db, err := database.Connect(cfg)
 	if err != nil {
 		log.Fatal("数据库连接失败:", err)
 	}
@@ -36,8 +27,8 @@ func main() {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
 
-	// 初始化安全服务
-	jwtService := utils.NewJWTService(cfg.JWTSecret, 24) // 24小时过期
+	// 初始化服务
+	jwtService := utils.NewJWTService(cfg.JWTSecret, cfg.JWTExpirationHours)
 	passwordService := utils.NewPasswordService()
 	encryptionService, err := utils.NewEncryptionService(cfg.EncryptionKey)
 	if err != nil {
@@ -45,36 +36,37 @@ func main() {
 	}
 	validationService := utils.NewValidationService()
 
-	// 初始化DNS提供商工厂
-	providerFactory := providers.NewProviderFactory()
-
 	// 初始化API控制器
 	authAPI := api.NewAuthAPI(db, jwtService, passwordService, validationService)
-	dnsAPI := api.NewSimpleDNSAPI(db, providerFactory, encryptionService, validationService)
 
 	// 设置Gin模式
-	if cfg.Environment == "production" {
+	if cfg.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
 	router := gin.Default()
 
-	// 添加增强的CORS中间件（支持Cloudflare Pages）
+	// 添加中间件
 	router.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowedOrigins: cfg.AllowedOrigins, // 从配置文件读取
-		IsDevelopment:  cfg.Environment == "development",
+		AllowedOrigins: cfg.AllowedOrigins,
+		IsDevelopment:  cfg.IsDevelopment(),
 	}))
 	router.Use(middleware.RateLimitMiddleware())
+	
+	if cfg.IsDevelopment() {
+		router.Use(middleware.LoggingMiddleware())
+	}
 
-	// 仅提供API服务，不服务前端文件
-	setupAPIRoutes(router, authAPI, dnsAPI, jwtService)
+	// 设置路由
+	setupAPIRoutes(router, authAPI, jwtService)
 
 	log.Printf("API服务器启动在端口 %s", cfg.Port)
+	log.Printf("环境: %s", cfg.Environment)
 	log.Printf("允许的来源: %v", cfg.AllowedOrigins)
 	log.Fatal(router.Run(":" + cfg.Port))
 }
 
-func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, dnsAPI *api.SimpleDNSAPI, jwtService *utils.JWTService) {
+func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, jwtService *utils.JWTService) {
 	// 健康检查
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -104,6 +96,7 @@ func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, dnsAPI *api.Simple
 		auth.POST("/login", authAPI.Login)
 		auth.POST("/register", authAPI.Register)
 		auth.POST("/logout", authAPI.Logout)
+		auth.POST("/refresh", authAPI.RefreshToken)
 	}
 
 	// 需要认证的路由
@@ -111,29 +104,25 @@ func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, dnsAPI *api.Simple
 	protected.Use(middleware.AuthMiddleware(jwtService))
 	{
 		// 用户相关
-		user := protected.Group("/user")
-		{
-			user.GET("/profile", authAPI.GetProfile)
-			user.POST("/change-password", authAPI.ChangePassword)
-			user.POST("/refresh-token", authAPI.RefreshToken)
-		}
+		protected.GET("/auth/profile", authAPI.GetProfile)
+		protected.POST("/auth/change-password", authAPI.ChangePassword)
 
 		// DNS提供商管理
 		providers := protected.Group("/dns-providers")
 		{
-			providers.GET("", dnsAPI.GetDNSProviders)
-			providers.POST("", dnsAPI.CreateDNSProvider)
-			providers.POST("/:id/test", dnsAPI.TestDNSProvider)
-			providers.GET("/supported", dnsAPI.ListSupportedProviders)
+			providers.GET("", func(c *gin.Context) {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "DNS提供商功能待实现",
+				})
+			})
 		}
 
-		// 域名管理
-		domains := protected.Group("/domains")
+		// DNS记录管理
+		records := protected.Group("/dns-records")
 		{
-			domains.GET("", func(c *gin.Context) {
+			records.GET("", func(c *gin.Context) {
 				c.JSON(http.StatusOK, gin.H{
-					"message": "域名管理功能待实现",
-					"todo":    "实现域名列表、添加域名、域名配置等功能",
+					"message": "DNS记录功能待实现",
 				})
 			})
 		}
@@ -143,26 +132,18 @@ func setupAPIRoutes(router *gin.Engine, authAPI *api.AuthAPI, dnsAPI *api.Simple
 		admin.Use(middleware.AdminRequiredMiddleware())
 		{
 			// 用户管理
-			adminUsers := admin.Group("/users")
-			{
-				adminUsers.GET("", func(c *gin.Context) {
-					c.JSON(http.StatusOK, gin.H{
-						"message": "用户管理功能待实现",
-						"todo":    "实现用户列表、用户详情、用户禁用等功能",
-					})
+			admin.GET("/users", func(c *gin.Context) {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "用户管理功能待实现",
 				})
-			}
+			})
 
-			// 系统管理
-			system := admin.Group("/system")
-			{
-				system.GET("/stats", func(c *gin.Context) {
-					c.JSON(http.StatusOK, gin.H{
-						"message": "系统统计功能待实现",
-						"todo":    "实现用户统计、域名统计、DNS记录统计等",
-					})
+			// 系统统计
+			admin.GET("/stats", func(c *gin.Context) {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "系统统计功能待实现",
 				})
-			}
+			})
 		}
 	}
 }
