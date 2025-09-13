@@ -52,37 +52,145 @@
 
 ### 系统要求
 
-- **Docker** 20.10+
-- **Docker Compose** 2.0+
+- **Go 1.23+** - 后端开发环境
+- **Node.js 18+** - 前端开发环境
+- **PostgreSQL 14+** - 数据库服务
+- **Redis 7+** - 缓存服务（可选）
 - **内存** 2GB+
-- **磁盘空间** 5GB+
+- **磁盘空间** 2GB+
 
-### 一键部署
+### 环境准备
+
+#### 1. 安装依赖软件
+
+**Ubuntu/Debian:**
+
+```bash
+# 安装 Go
+wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+
+# 安装 Node.js
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# 安装 PostgreSQL
+sudo apt-get install postgresql postgresql-contrib
+
+# 安装 Redis（可选）
+sudo apt-get install redis-server
+```
+
+**macOS:**
+
+```bash
+# 使用 Homebrew 安装
+brew install go node postgresql redis
+```
+
+**Windows:**
+
+```bash
+# 使用 Scoop 安装（推荐）
+scoop install go nodejs postgresql redis
+
+# 或下载官方安装包
+# Go: https://golang.org/dl/
+# Node.js: https://nodejs.org/
+# PostgreSQL: https://www.postgresql.org/download/
+```
+
+#### 2. 配置数据库
+
+```bash
+# 启动 PostgreSQL 服务
+sudo systemctl start postgresql  # Linux
+brew services start postgresql   # macOS
+# Windows: 通过服务管理器启动
+
+# 创建数据库用户和数据库
+sudo -u postgres psql
+CREATE USER domain_user WITH PASSWORD 'your_password';
+CREATE DATABASE domain_manager OWNER domain_user;
+GRANT ALL PRIVILEGES ON DATABASE domain_manager TO domain_user;
+\q
+```
+
+#### 3. 配置环境变量
+
+```bash
+# 复制环境配置文件
+cp deployments/.env.example .env
+
+# 编辑环境配置
+vi .env
+```
+
+必须配置的环境变量：
+
+```env
+# 数据库配置
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=domain_user
+DB_PASSWORD=your_password
+DB_NAME=domain_manager
+
+# 应用配置
+PORT=8080
+JWT_SECRET=your-super-secret-jwt-key
+ENCRYPTION_KEY=your-32-byte-encryption-key
+
+# Redis 配置（可选）
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
+
+### 本地开发部署
 
 ```bash
 # 1. 克隆项目
 git clone https://github.com/your-repo/domain-max.git
 cd domain-max
 
-# 2. 一键部署
-./scripts/deploy-complete.sh
+# 2. 安装依赖
+make install
+
+# 3. 构建项目
+make build
+
+# 4. 初始化数据库
+make db-migrate
+
+# 5. 启动应用
+make dev
 ```
 
-部署脚本会自动：
+### 生产环境部署
 
-- ✅ 复制环境配置文件
-- ✅ 生成 SSL 证书
-- ✅ 构建应用镜像
-- ✅ 启动所有服务
-- ✅ 执行健康检查
+```bash
+# 1. 构建生产版本
+make build-all
+
+# 2. 配置生产环境变量
+cp .env .env.production
+# 编辑生产配置...
+
+# 3. 启动应用
+./domain-max
+
+# 或者在后台运行
+nohup ./domain-max > app.log 2>&1 &
+```
 
 ### 访问应用
 
-部署完成后，您可以通过以下地址访问：
+应用启动后，您可以通过以下地址访问：
 
-- **前端界面**: https://localhost
-- **API 接口**: https://localhost/api
-- **管理后台**: https://localhost/admin
+- **前端界面**: http://localhost:8080
+- **API 接口**: http://localhost:8080/api
+- **健康检查**: http://localhost:8080/api/health
 
 ## 📋 系统架构
 
@@ -98,22 +206,14 @@ cd domain-max
          └──────────────┤   会话存储      ├──────────────┘
                         │   频率限制      │
                         └─────────────────┘
-                                │
-                     ┌─────────────────┐
-                     │  Nginx 代理     │
-                     │  SSL 终止       │
-                     │  负载均衡       │
-                     └─────────────────┘
 ```
 
-### 服务组件
+### 服务架构
 
-| 服务         | 端口    | 描述                             |
-| ------------ | ------- | -------------------------------- |
-| **nginx**    | 80, 443 | 反向代理、SSL 终止、静态文件服务 |
-| **app**      | 8080    | Go 后端应用服务                  |
-| **postgres** | 5432    | PostgreSQL 数据库                |
-| **redis**    | 6379    | Redis 缓存和会话存储             |
+- **前端服务** - React 应用已构建并内嵌到 Go 二进制文件中
+- **后端服务** - Go 单体应用，内置静态文件服务
+- **数据库** - PostgreSQL 独立部署
+- **缓存** - Redis 独立部署（可选）
 
 ## 🛠️ 技术栈
 
@@ -138,9 +238,9 @@ cd domain-max
 
 ### 基础设施
 
-- **Docker** - 容器化部署
-- **Nginx** - 反向代理和负载均衡
-- **Let's Encrypt** - 免费 SSL 证书
+- **内嵌静态服务** - Go 应用内置前端静态文件服务
+- **PostgreSQL** - 关系型数据库
+- **Redis** - 缓存和会话存储（可选）
 
 ## 📖 详细文档
 
@@ -154,33 +254,31 @@ cd domain-max
 ### 本地开发环境
 
 ```bash
-# 1. 启动开发环境
-docker-compose -f docker-compose.dev.yml up -d
+# 1. 安装依赖
+make install
 
-# 2. 前端开发
-cd web
-npm install
-npm run dev
+# 2. 启动开发环境（分离模式）
+# 终端1: 启动后端开发服务器
+make dev
 
-# 3. 后端开发
-cd cmd/server
-go run main.go
+# 终端2: 启动前端开发服务器（热重载）
+make dev-web
 ```
 
-### 测试
+### 构建和测试
 
 ```bash
-# 运行完整系统测试
-./scripts/system-test.sh
+# 构建项目
+make build
 
-# 快速测试
-./scripts/system-test.sh --quick
+# 运行测试
+make test
 
-# 安全测试
-./scripts/system-test.sh --security
+# 代码检查
+make lint
 
-# 性能测试
-./scripts/system-test.sh --performance
+# 生成测试覆盖率报告
+make test-coverage
 ```
 
 ## 🏥 运维管理
@@ -188,43 +286,53 @@ go run main.go
 ### 服务管理
 
 ```bash
-# 启动服务
-docker-compose up -d
+# 启动应用
+./domain-max
 
-# 停止服务
-docker-compose stop
+# 后台运行
+nohup ./domain-max > app.log 2>&1 &
 
-# 重启服务
-docker-compose restart
+# 停止应用（查找进程ID）
+ps aux | grep domain-max
+kill <PID>
 
-# 查看状态
-docker-compose ps
-
-# 查看日志
-docker-compose logs -f
+# 或使用脚本管理
+# 创建服务脚本 /etc/systemd/system/domain-max.service
+sudo systemctl start domain-max
+sudo systemctl stop domain-max
+sudo systemctl restart domain-max
 ```
 
 ### 健康检查
 
 ```bash
 # 应用健康检查
-curl https://localhost/api/health
+curl http://localhost:8080/api/health
 
-# 服务健康检查
-./scripts/deploy-complete.sh --check-health
+# 检查进程状态
+ps aux | grep domain-max
 
-# 容器状态检查
-docker stats
+# 检查端口占用
+netstat -tlnp | grep :8080
+
+# 检查日志
+tail -f app.log
 ```
 
-### 备份恢复
+### 数据库管理
 
 ```bash
-# 创建备份
-./scripts/backup.sh
+# 连接数据库
+psql -h localhost -U domain_user -d domain_manager
 
-# 恢复数据
-./scripts/restore.sh backup_file.tar.gz
+# 备份数据库
+pg_dump -h localhost -U domain_user domain_manager > backup.sql
+
+# 恢复数据库
+psql -h localhost -U domain_user domain_manager < backup.sql
+
+# 数据库迁移
+make db-migrate
 ```
 
 ## 🔒 安全特性
@@ -277,53 +385,76 @@ docker stats
 
 ### 常见问题
 
-#### 服务无法启动
+#### 应用无法启动
 
 ```bash
-# 检查容器状态
-docker-compose ps
+# 检查端口占用
+netstat -tlnp | grep :8080
+lsof -i :8080
 
-# 查看错误日志
-docker-compose logs app
+# 检查配置文件
+cat .env
 
-# 重新构建
-docker-compose build --no-cache
+# 检查日志
+tail -f app.log
+
+# 检查权限
+ls -la domain-max
+chmod +x domain-max
 ```
 
 #### 数据库连接失败
 
 ```bash
-# 检查数据库状态
-docker-compose exec postgres pg_isready -U postgres
+# 检查数据库服务状态
+sudo systemctl status postgresql  # Linux
+brew services list | grep postgresql  # macOS
 
-# 查看数据库日志
-docker-compose logs postgres
+# 测试数据库连接
+psql -h localhost -U domain_user -d domain_manager
 
-# 检查网络连通性
-docker-compose exec app ping postgres
+# 检查数据库配置
+grep -E "^(DB_|POSTGRES_)" .env
+
+# 重启数据库服务
+sudo systemctl restart postgresql
 ```
 
-#### SSL 证书问题
+#### 前端页面无法访问
 
 ```bash
-# 重新生成证书
-./scripts/generate-ssl.sh
+# 检查静态文件是否存在
+ls -la web/dist/
 
-# 检查证书有效性
-openssl x509 -in deployments/ssl/nginx-selfsigned.crt -text -noout
+# 重新构建前端
+cd web && npm run build
+
+# 检查服务器路由配置
+curl -v http://localhost:8080/
 ```
 
 ### 性能问题诊断
 
 ```bash
-# 查看资源使用
-docker stats
+# 检查系统资源
+top
+htop
+free -h
+df -h
 
-# 分析慢查询
-docker-compose exec postgres psql -U postgres -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
+# 检查应用性能
+# 安装 pprof
+go tool pprof http://localhost:8080/debug/pprof/profile
+
+# 数据库性能分析
+psql -U domain_user -d domain_manager -c "
+SELECT query, calls, total_time, mean_time
+FROM pg_stat_statements
+ORDER BY total_time DESC
+LIMIT 10;"
 
 # 检查网络延迟
-curl -w "@curl-format.txt" -o /dev/null -s https://localhost/api/health
+curl -w "%{time_total}" -o /dev/null -s http://localhost:8080/api/health
 ```
 
 ## 🤝 贡献指南

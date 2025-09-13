@@ -1,36 +1,40 @@
 # Domain MAX 部署指南
 
-本文档详细介绍了Domain MAX的各种部署方式，包括本地开发、Docker部署和生产环境部署。
+本文档详细介绍了 Domain MAX 的各种部署方式，包括本地开发和生产环境部署。
 
 ## 📋 部署前准备
 
 ### 系统要求
 
 **最低配置**
-- CPU: 1核心
+
+- CPU: 1 核心
 - 内存: 1GB RAM
-- 存储: 10GB可用空间
+- 存储: 10GB 可用空间
 - 操作系统: Linux/macOS/Windows
 
 **推荐配置**
-- CPU: 2核心以上
-- 内存: 2GB RAM以上
-- 存储: 20GB可用空间
+
+- CPU: 2 核心以上
+- 内存: 2GB RAM 以上
+- 存储: 20GB 可用空间
 - 操作系统: Ubuntu 20.04+ / CentOS 8+ / macOS 12+
 
 ### 依赖软件
 
 **必需软件**
+
 - Go 1.23+
 - Node.js 18+
 - PostgreSQL 12+ 或 MySQL 8.0+
+- Redis (可选，用于缓存)
 
 **可选软件**
-- Docker 20.10+
-- Docker Compose 2.0+
-- Nginx (反向代理)
 
-## 🚀 快速部署 (Docker)
+- Nginx (反向代理)
+- PM2 (进程管理)
+
+## 🚀 快速部署
 
 ### 1. 下载项目
 
@@ -65,27 +69,41 @@ SMTP_PASSWORD=your_app_password
 SMTP_FROM=noreply@yourdomain.com
 ```
 
-### 3. 启动服务
+### 3. 安装依赖
 
 ```bash
-cd deployments
-docker-compose up -d --build
+# 安装Go依赖
+go mod tidy
+
+# 安装前端依赖
+cd web && npm install && cd ..
 ```
 
-### 4. 验证部署
+### 4. 构建应用
 
 ```bash
-# 检查服务状态
-docker-compose ps
+# 使用构建脚本
+./scripts/build.sh
 
-# 查看日志
-docker-compose logs -f app
+# 或者手动构建
+cd web && npm run build && cd ..
+go build -o domain-max ./cmd/server
+```
 
+### 5. 运行应用
+
+```bash
+./domain-max
+```
+
+### 6. 验证部署
+
+```bash
 # 健康检查
 curl http://localhost:8080/api/health
 ```
 
-### 5. 访问应用
+### 7. 访问应用
 
 - 应用地址: http://localhost:8080
 - 默认管理员: admin@example.com / admin123
@@ -115,6 +133,7 @@ npm --version
 ### 2. 数据库准备
 
 **PostgreSQL**
+
 ```bash
 # 安装PostgreSQL
 sudo apt-get install postgresql postgresql-contrib
@@ -128,6 +147,7 @@ GRANT ALL PRIVILEGES ON DATABASE domain_manager TO domain_user;
 ```
 
 **MySQL**
+
 ```bash
 # 安装MySQL
 sudo apt-get install mysql-server
@@ -182,14 +202,17 @@ sudo apt-get update && sudo apt-get upgrade -y
 # 安装必要软件
 sudo apt-get install -y curl wget git nginx certbot python3-certbot-nginx
 
-# 安装Docker
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-sudo usermod -aG docker $USER
+# 安装Go
+wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
 
-# 安装Docker Compose
-sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
+# 安装Node.js
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# 安装PM2 (进程管理器)
+sudo npm install -g pm2
 ```
 
 ### 2. 安全配置
@@ -203,7 +226,6 @@ sudo ufw enable
 
 # 创建应用用户
 sudo useradd -m -s /bin/bash domain-max
-sudo usermod -aG docker domain-max
 ```
 
 ### 3. 部署应用
@@ -226,6 +248,7 @@ cp configs/env.example .env
 # 生产环境配置
 ENVIRONMENT=production
 BASE_URL=https://yourdomain.com
+HTTP_PORT=8080
 
 # 强密码配置
 DB_PASSWORD=<strong-random-password>
@@ -241,14 +264,18 @@ SMTP_FROM=noreply@yourdomain.com
 ```
 
 ```bash
-# 启动服务
-cd deployments
-docker-compose up -d --build
+# 构建应用
+./scripts/build.sh
+
+# 配置PM2
+pm2 start domain-max --name "domain-max"
+pm2 save
+pm2 startup
 ```
 
 ### 4. 配置反向代理
 
-创建Nginx配置文件：
+创建 Nginx 配置文件：
 
 ```bash
 sudo nano /etc/nginx/sites-available/domain-max
@@ -258,7 +285,7 @@ sudo nano /etc/nginx/sites-available/domain-max
 server {
     listen 80;
     server_name yourdomain.com www.yourdomain.com;
-    
+
     # 重定向到HTTPS
     return 301 https://$server_name$request_uri;
 }
@@ -266,25 +293,25 @@ server {
 server {
     listen 443 ssl http2;
     server_name yourdomain.com www.yourdomain.com;
-    
+
     # SSL配置
     ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    
+
     # SSL安全配置
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 10m;
-    
+
     # 安全头
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    
+
     # 代理到应用
     location / {
         proxy_pass http://localhost:8080;
@@ -296,13 +323,13 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
-        
+
         # 超时配置
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
         proxy_read_timeout 60s;
     }
-    
+
     # 静态文件缓存
     location /static/ {
         proxy_pass http://localhost:8080;
@@ -320,7 +347,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### 5. 配置SSL证书
+### 5. 配置 SSL 证书
 
 ```bash
 # 获取Let's Encrypt证书
@@ -334,7 +361,7 @@ sudo crontab -e
 
 ### 6. 配置监控
 
-创建systemd服务文件：
+创建 systemd 服务文件：
 
 ```bash
 sudo nano /etc/systemd/system/domain-max.service
@@ -385,6 +412,7 @@ docker-compose logs -f app
 ### 备份策略
 
 **数据库备份**
+
 ```bash
 # PostgreSQL备份
 docker-compose exec db pg_dump -U postgres domain_manager > backup_$(date +%Y%m%d_%H%M%S).sql
@@ -394,6 +422,7 @@ docker-compose exec db mysqldump -u root -p domain_manager > backup_$(date +%Y%m
 ```
 
 **配置备份**
+
 ```bash
 # 备份配置文件
 tar -czf config_backup_$(date +%Y%m%d_%H%M%S).tar.gz .env configs/
@@ -416,6 +445,7 @@ curl http://localhost:8080/api/health
 ### 性能优化
 
 **数据库优化**
+
 ```sql
 -- PostgreSQL优化
 ALTER SYSTEM SET shared_buffers = '256MB';
@@ -425,6 +455,7 @@ SELECT pg_reload_conf();
 ```
 
 **应用优化**
+
 ```bash
 # 调整Docker资源限制
 # 在docker-compose.yml中添加：
@@ -445,6 +476,7 @@ services:
 ### 常见问题
 
 **1. 数据库连接失败**
+
 ```bash
 # 检查数据库状态
 docker-compose logs db
@@ -454,6 +486,7 @@ docker-compose exec app ping db
 ```
 
 **2. 前端资源加载失败**
+
 ```bash
 # 检查构建输出
 ls -la web/dist/
@@ -462,7 +495,8 @@ ls -la web/dist/
 cd web && npm run build
 ```
 
-**3. SSL证书问题**
+**3. SSL 证书问题**
+
 ```bash
 # 检查证书状态
 sudo certbot certificates
@@ -497,10 +531,10 @@ docker-compose exec db psql -U postgres -d domain_manager -c "SELECT * FROM pg_s
 
 ## 📚 参考资料
 
-- [Docker官方文档](https://docs.docker.com/)
-- [PostgreSQL文档](https://www.postgresql.org/docs/)
-- [Nginx配置指南](https://nginx.org/en/docs/)
-- [Let's Encrypt文档](https://letsencrypt.org/docs/)
+- [Docker 官方文档](https://docs.docker.com/)
+- [PostgreSQL 文档](https://www.postgresql.org/docs/)
+- [Nginx 配置指南](https://nginx.org/en/docs/)
+- [Let's Encrypt 文档](https://letsencrypt.org/docs/)
 
 ---
 

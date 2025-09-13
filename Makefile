@@ -1,6 +1,6 @@
 # Domain MAX Makefile
 
-.PHONY: help build clean test lint dev docker-build docker-up docker-down install deps
+.PHONY: help build clean test lint dev install deps
 
 # Default target
 help: ## Show this help message
@@ -92,25 +92,6 @@ clean-all: clean ## Clean everything including caches
 	@echo "🧹 深度清理..."
 	go clean -cache -modcache
 	cd web && npm cache clean --force
-
-# Docker相关
-docker-build: ## Build Docker image
-	@echo "🐳 构建Docker镜像..."
-	docker build -f deployments/Dockerfile -t domain-max:latest .
-
-docker-up: ## Start services with Docker Compose
-	@echo "🐳 启动Docker服务..."
-	cd deployments && docker-compose up -d
-
-docker-down: ## Stop Docker services
-	@echo "🐳 停止Docker服务..."
-	cd deployments && docker-compose down
-
-docker-logs: ## Show Docker logs
-	@echo "📋 查看Docker日志..."
-	cd deployments && docker-compose logs -f
-
-docker-rebuild: docker-down docker-build docker-up ## Rebuild and restart Docker services
 
 # 数据库相关
 db-migrate: ## Run database migrations
