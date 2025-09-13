@@ -1,6 +1,6 @@
 # Domain MAX 部署指南
 
-本文档详细介绍了 Domain MAX 的各种部署方式，包括本地开发和生产环境部署。
+本文档详细介绍了 Domain MAX 的源码部署方式，包括本地开发和生产环境部署。
 
 ## 📋 部署前准备
 
@@ -27,12 +27,12 @@
 - Go 1.23+
 - Node.js 18+
 - PostgreSQL 12+ 或 MySQL 8.0+
-- Redis (可选，用于缓存)
 
 **可选软件**
 
 - Nginx (反向代理)
 - PM2 (进程管理)
+- Redis (缓存)
 
 ## 🚀 快速部署
 
@@ -46,7 +46,7 @@ cd domain-max
 ### 2. 配置环境变量
 
 ```bash
-cp configs/env.example .env
+cp .env.example .env
 ```
 
 编辑 `.env` 文件，设置必要的配置：
@@ -79,7 +79,18 @@ go mod tidy
 cd web && npm install && cd ..
 ```
 
-### 4. 构建应用
+### 4. 初始化数据库
+
+```bash
+# 使用提供的SQL脚本初始化数据库
+# PostgreSQL
+psql -U domain_user -d domain_manager -f init.sql
+
+# MySQL
+mysql -u domain_user -p domain_manager < init.sql
+```
+
+### 5. 构建应用
 
 ```bash
 # 使用构建脚本
@@ -90,20 +101,23 @@ cd web && npm run build && cd ..
 go build -o domain-max ./cmd/server
 ```
 
-### 5. 运行应用
+### 6. 运行应用
 
 ```bash
 ./domain-max
 ```
 
-### 6. 验证部署
+### 7. 验证部署
 
 ```bash
 # 健康检查
 curl http://localhost:8080/api/health
+
+# 检查应用日志
+tail -f domain-max.log
 ```
 
-### 7. 访问应用
+### 8. 访问应用
 
 - 应用地址: http://localhost:8080
 - 默认管理员: admin@example.com / admin123
@@ -169,12 +183,23 @@ git clone <repository-url>
 cd domain-max
 
 # 配置环境变量
-cp configs/env.example .env
+cp .env.example .env
 # 编辑 .env 文件
 
 # 安装依赖
 go mod tidy
 cd web && npm install && cd ..
+```
+
+### 4. 初始化数据库
+
+```bash
+# 使用提供的SQL脚本初始化数据库
+# PostgreSQL
+psql -U domain_user -d domain_manager -f init.sql
+
+# MySQL
+mysql -u domain_user -p domain_manager < init.sql
 ```
 
 ### 4. 构建和运行
@@ -239,7 +264,7 @@ git clone <repository-url>
 cd domain-max
 
 # 配置生产环境变量
-cp configs/env.example .env
+cp .env.example .env
 ```
 
 编辑生产环境配置：
@@ -267,8 +292,8 @@ SMTP_FROM=noreply@yourdomain.com
 # 构建应用
 ./scripts/build.sh
 
-# 配置PM2
-pm2 start domain-max --name "domain-max"
+# 配置PM2启动应用
+pm2 start ./domain-max --name "domain-max"
 pm2 save
 pm2 startup
 ```
@@ -359,7 +384,7 @@ sudo crontab -e
 0 12 * * * /usr/bin/certbot renew --quiet
 ```
 
-### 6. 配置监控
+### 6. 配置进程管理
 
 创建 systemd 服务文件：
 
@@ -370,17 +395,17 @@ sudo nano /etc/systemd/system/domain-max.service
 ```ini
 [Unit]
 Description=Domain MAX Application
-After=docker.service
-Requires=docker.service
+After=network.target
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/home/domain-max/domain-max/deployments
-ExecStart=/usr/local/bin/docker-compose up -d
-ExecStop=/usr/local/bin/docker-compose down
+Type=simple
 User=domain-max
 Group=domain-max
+WorkingDirectory=/home/domain-max/domain-max
+ExecStart=/home/domain-max/domain-max/domain-max
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
 
 [Install]
 WantedBy=multi-user.target
@@ -392,6 +417,7 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable domain-max
 sudo systemctl start domain-max
+sudo systemctl status domain-max
 ```
 
 ## 📊 监控和维护
@@ -402,11 +428,16 @@ sudo systemctl start domain-max
 # 检查应用状态
 curl -f http://localhost:8080/api/health || echo "Service is down"
 
-# 检查容器状态
-docker-compose ps
+# 检查systemd服务状态
+sudo systemctl status domain-max
 
-# 查看日志
-docker-compose logs -f app
+# 检查PM2进程状态
+pm2 status
+
+# 查看应用日志
+sudo journalctl -u domain-max -f
+# 或者查看PM2日志
+pm2 logs domain-max
 ```
 
 ### 备份策略
@@ -415,17 +446,17 @@ docker-compose logs -f app
 
 ```bash
 # PostgreSQL备份
-docker-compose exec db pg_dump -U postgres domain_manager > backup_$(date +%Y%m%d_%H%M%S).sql
+pg_dump -U domain_user -d domain_manager > backup_$(date +%Y%m%d_%H%M%S).sql
 
 # MySQL备份
-docker-compose exec db mysqldump -u root -p domain_manager > backup_$(date +%Y%m%d_%H%M%S).sql
+mysqldump -u domain_user -p domain_manager > backup_$(date +%Y%m%d_%H%M%S).sql
 ```
 
 **配置备份**
 
 ```bash
-# 备份配置文件
-tar -czf config_backup_$(date +%Y%m%d_%H%M%S).tar.gz .env configs/
+# 备份配置文件和可执行文件
+tar -czf config_backup_$(date +%Y%m%d_%H%M%S).tar.gz .env domain-max init.sql
 ```
 
 ### 更新部署
@@ -434,9 +465,18 @@ tar -czf config_backup_$(date +%Y%m%d_%H%M%S).tar.gz .env configs/
 # 拉取最新代码
 git pull origin main
 
-# 重新构建和部署
-docker-compose down
-docker-compose up -d --build
+# 停止服务
+sudo systemctl stop domain-max
+# 或者使用PM2
+pm2 stop domain-max
+
+# 重新构建
+./scripts/build.sh
+
+# 启动服务
+sudo systemctl start domain-max
+# 或者使用PM2
+pm2 restart domain-max
 
 # 验证更新
 curl http://localhost:8080/api/health
@@ -457,18 +497,15 @@ SELECT pg_reload_conf();
 **应用优化**
 
 ```bash
-# 调整Docker资源限制
-# 在docker-compose.yml中添加：
-services:
-  app:
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
+# 编译时优化
+go build -ldflags="-s -w" -o domain-max ./cmd/server
+
+# 设置Go运行时参数
+export GOMAXPROCS=2
+export GOGC=100
+
+# 前端优化
+cd web && npm run build -- --mode production
 ```
 
 ## 🔧 故障排除
@@ -479,23 +516,45 @@ services:
 
 ```bash
 # 检查数据库状态
-docker-compose logs db
+sudo systemctl status postgresql
+# 或者MySQL
+sudo systemctl status mysql
+
+# 测试数据库连接
+psql -U domain_user -d domain_manager -c "SELECT 1;"
+# 或者MySQL
+mysql -u domain_user -p domain_manager -e "SELECT 1;"
 
 # 检查网络连接
-docker-compose exec app ping db
+telnet localhost 5432  # PostgreSQL
+telnet localhost 3306  # MySQL
 ```
 
-**2. 前端资源加载失败**
+**2. 应用启动失败**
+
+```bash
+# 检查应用日志
+sudo journalctl -u domain-max -n 50
+
+# 检查配置文件
+cat .env
+
+# 手动启动测试
+./domain-max
+```
+
+**3. 前端资源加载失败**
 
 ```bash
 # 检查构建输出
 ls -la web/dist/
 
 # 重新构建前端
-cd web && npm run build
+cd web && npm run build && cd ..
+go build -o domain-max ./cmd/server
 ```
 
-**3. SSL 证书问题**
+**4. SSL 证书问题**
 
 ```bash
 # 检查证书状态
@@ -509,33 +568,63 @@ sudo certbot renew --dry-run
 
 ```bash
 # 应用日志
-docker-compose logs -f app
+sudo journalctl -u domain-max -f
+# 或者PM2日志
+pm2 logs domain-max --lines 100
 
 # 数据库日志
-docker-compose logs -f db
+# PostgreSQL
+sudo tail -f /var/log/postgresql/postgresql-*.log
+# MySQL
+sudo tail -f /var/log/mysql/error.log
 
 # Nginx日志
 sudo tail -f /var/log/nginx/access.log
 sudo tail -f /var/log/nginx/error.log
+
+# 系统日志
+sudo journalctl -f
 ```
 
 ### 性能调试
 
 ```bash
-# 检查资源使用
-docker stats
+# 检查系统资源使用
+top
+htop
+free -h
+df -h
+
+# 检查应用性能
+ps aux | grep domain-max
+
+# Go性能分析
+# 在应用中启用pprof，然后访问
+curl http://localhost:8080/debug/pprof/
+go tool pprof http://localhost:8080/debug/pprof/profile
 
 # 检查数据库性能
-docker-compose exec db psql -U postgres -d domain_manager -c "SELECT * FROM pg_stat_activity;"
+# PostgreSQL
+psql -U domain_user -d domain_manager -c "SELECT * FROM pg_stat_activity;"
+# MySQL
+mysql -u domain_user -p domain_manager -e "SHOW PROCESSLIST;"
+
+# 网络连接检查
+netstat -tuln | grep :8080
+ss -tuln | grep :8080
 ```
 
 ## 📚 参考资料
 
-- [Docker 官方文档](https://docs.docker.com/)
+- [Go 官方文档](https://golang.org/doc/)
+- [Node.js 文档](https://nodejs.org/docs/)
 - [PostgreSQL 文档](https://www.postgresql.org/docs/)
+- [MySQL 文档](https://dev.mysql.com/doc/)
 - [Nginx 配置指南](https://nginx.org/en/docs/)
 - [Let's Encrypt 文档](https://letsencrypt.org/docs/)
+- [PM2 进程管理](https://pm2.keymetrics.io/docs/)
+- [systemd 服务管理](https://systemd.io/)
 
 ---
 
-如有部署问题，请查看[故障排除指南](troubleshooting.md)或提交[Issue](../../issues)。
+如有部署问题，请查看[架构文档](architecture.md)或提交[Issue](../../issues)。

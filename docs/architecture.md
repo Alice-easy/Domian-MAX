@@ -7,22 +7,24 @@ Domain MAX 采用现代化的微服务架构设计，前后端分离，模块化
 ## 技术栈
 
 ### 后端技术栈
+
 - **语言**：Go 1.23+
-- **Web框架**：Gin
+- **Web 框架**：Gin
 - **ORM**：GORM
 - **数据库**：PostgreSQL / MySQL
 - **认证**：JWT + 刷新令牌
 - **加密**：AES-256 + bcrypt
-- **容器化**：Docker + Docker Compose
+- **部署**：源码编译部署
 
 ### 前端技术栈
+
 - **语言**：TypeScript
 - **框架**：React 18
 - **构建工具**：Vite
-- **UI库**：Ant Design
+- **UI 库**：Ant Design
 - **路由**：React Router
 - **状态管理**：Zustand
-- **HTTP客户端**：Axios
+- **HTTP 客户端**：Axios
 
 ## 系统架构图
 
@@ -157,15 +159,17 @@ Client Request
 ### 多层安全防护
 
 1. **网络层安全**
-   - HTTPS强制加密
+
+   - HTTPS 强制加密
    - 防火墙规则
-   - DDoS防护
+   - DDoS 防护
 
 2. **应用层安全**
-   - JWT认证
-   - CSRF保护
+
+   - JWT 认证
+   - CSRF 保护
    - 输入验证
-   - SQL注入防护
+   - SQL 注入防护
 
 3. **数据层安全**
    - 数据库访问控制
@@ -192,11 +196,13 @@ Client Request
 ### 缓存策略
 
 1. **应用层缓存**
-   - JWT Token缓存
+
+   - JWT Token 缓存
    - 用户会话缓存
-   - DNS记录缓存
+   - DNS 记录缓存
 
 2. **数据库优化**
+
    - 索引优化
    - 查询优化
    - 连接池管理
@@ -209,6 +215,7 @@ Client Request
 ### 扩展性设计
 
 1. **水平扩展**
+
    - 无状态应用设计
    - 负载均衡支持
    - 数据库读写分离
@@ -220,18 +227,23 @@ Client Request
 
 ## 部署架构
 
-### 容器化部署
+### 源码部署
 
 ```
-Docker Compose Stack
-├── Application Container
-│   ├── Go Binary
-│   ├── Embedded Frontend
-│   └── Health Check
-├── Database Container
-│   ├── PostgreSQL
-│   ├── Data Volume
-│   └── Backup Script
+Production Environment
+├── Application Binary
+│   ├── Go Compiled Binary
+│   ├── Embedded React Frontend
+│   ├── Static Assets
+│   └── Health Check Endpoint
+├── Database Service
+│   ├── PostgreSQL / MySQL
+│   ├── Data Storage
+│   └── Backup Scripts
+├── Process Manager
+│   ├── systemd Service
+│   ├── PM2 (Optional)
+│   └── Auto Restart
 └── Reverse Proxy (Optional)
     ├── Nginx
     ├── SSL Termination
@@ -241,18 +253,22 @@ Docker Compose Stack
 ### 环境隔离
 
 1. **开发环境**
+
    - 本地开发
    - 热重载
    - 详细日志
 
 2. **测试环境**
+
    - 自动化测试
    - 性能测试
    - 安全测试
 
 3. **生产环境**
-   - 高可用部署
+   - 源码编译部署
+   - 进程管理（systemd/PM2）
    - 监控告警
+   - 自动重启
    - 备份恢复
 
 ## 监控架构
@@ -260,11 +276,13 @@ Docker Compose Stack
 ### 应用监控
 
 1. **健康检查**
+
    - 服务状态检查
    - 数据库连接检查
    - 依赖服务检查
 
 2. **性能监控**
+
    - 响应时间统计
    - 吞吐量监控
    - 错误率统计
@@ -295,13 +313,15 @@ Application Logs
 ### 数据模型设计
 
 1. **用户数据**
+
    - 用户基本信息
    - 认证信息
    - 权限信息
 
-2. **DNS数据**
+2. **DNS 数据**
+
    - 域名信息
-   - DNS记录
+   - DNS 记录
    - 服务商配置
 
 3. **系统数据**
@@ -312,7 +332,8 @@ Application Logs
 ### 数据一致性
 
 1. **事务管理**
-   - ACID特性保证
+
+   - ACID 特性保证
    - 分布式事务处理
    - 数据完整性约束
 
@@ -323,7 +344,7 @@ Application Logs
 
 ## 总结
 
-Domain MAX的架构设计遵循以下原则：
+Domain MAX 的架构设计遵循以下原则：
 
 1. **模块化**：清晰的模块划分，低耦合高内聚
 2. **安全性**：多层安全防护，数据加密保护
@@ -331,5 +352,6 @@ Domain MAX的架构设计遵循以下原则：
 4. **可维护性**：标准化的代码结构和文档
 5. **高性能**：优化的数据访问和缓存策略
 6. **可观测性**：完善的监控和日志系统
+7. **简洁性**：源码直接部署，减少复杂性
 
-这种架构设计确保了系统的稳定性、安全性和可扩展性，为用户提供可靠的域名和DNS管理服务。
+这种架构设计确保了系统的稳定性、安全性和可扩展性，同时保持了部署和维护的简洁性，为用户提供可靠的域名和 DNS 管理服务。

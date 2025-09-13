@@ -121,7 +121,7 @@ GRANT ALL PRIVILEGES ON DATABASE domain_manager TO domain_user;
 
 ```bash
 # 复制环境配置文件
-cp deployments/.env.example .env
+cp .env.example .env
 
 # 编辑环境配置
 vi .env

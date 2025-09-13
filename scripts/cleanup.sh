@@ -42,7 +42,7 @@ CLEANUP_ITEMS=(
 # 定义保留的重要文件
 KEEP_FILES=(
     ".env"
-    "configs/env.example"
+    ".env.example"
     "README.md"
     "LICENSE"
     "go.mod"
@@ -159,32 +159,9 @@ backup_configs() {
     echo
 }
 
-# 深度清理（包括Docker相关）
+# 深度清理
 deep_cleanup() {
     echo "🔥 执行深度清理..."
-    
-    # 清理Docker资源
-    if command -v docker &> /dev/null; then
-        echo "  🐳 清理Docker资源..."
-        
-        # 停止相关容器
-        docker-compose -f deployments/docker-compose.yml down 2>/dev/null || true
-        
-        # 清理未使用的镜像
-        docker image prune -f
-        
-        # 清理未使用的容器
-        docker container prune -f
-        
-        # 清理未使用的网络
-        docker network prune -f
-        
-        # 清理未使用的卷（谨慎使用）
-        if [ "$1" = "--include-volumes" ]; then
-            echo "  ⚠️  清理Docker卷..."
-            docker volume prune -f
-        fi
-    fi
     
     # 清理Go缓存
     if command -v go &> /dev/null; then
@@ -215,7 +192,7 @@ main() {
             do_cleanup
             ;;
         "--deep")
-            deep_cleanup "$2"
+            deep_cleanup
             ;;
         "--all")
             backup_configs
@@ -229,8 +206,7 @@ main() {
             echo "  -p, --preview           预览将要清理的文件"
             echo "  -b, --backup            备份重要配置文件"
             echo "  -f, --force             强制清理（无确认）"
-            echo "  --deep                  深度清理（包括Docker和缓存）"
-            echo "  --deep --include-volumes 深度清理（包括Docker卷）"
+            echo "  --deep                  深度清理（缓存和临时文件）"
             echo "  --all                   执行完整清理（备份+清理+深度清理）"
             echo "  -h, --help              显示此帮助信息"
             echo
